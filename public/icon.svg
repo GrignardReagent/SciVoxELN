@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="SciVox ELN">
+  <defs>
+    <linearGradient id="svg-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0081a7"/>
+      <stop offset="1" stop-color="#00afb9"/>
+    </linearGradient>
+  </defs>
+  <rect x="16" y="16" width="480" height="480" rx="116" fill="url(#svg-bg)"/>
+  <!-- microphone capsule (voice capture) -->
+  <rect x="216" y="120" width="80" height="180" rx="40" fill="#ffffff"/>
+  <!-- waveform lines on the capsule -->
+  <g stroke="#00afb9" stroke-width="10" stroke-linecap="round" opacity="0.5">
+    <line x1="240" y1="152" x2="272" y2="152"/>
+    <line x1="240" y1="180" x2="272" y2="180"/>
+    <line x1="240" y1="208" x2="272" y2="208"/>
+  </g>
+  <!-- stand cradle -->
+  <path d="M176 262 C176 332 336 332 336 262" fill="none" stroke="#ffffff" stroke-width="22" stroke-linecap="round"/>
+  <!-- stem + base -->
+  <line x1="256" y1="316" x2="256" y2="382" stroke="#ffffff" stroke-width="22" stroke-linecap="round"/>
+  <line x1="210" y1="394" x2="302" y2="394" stroke="#ffffff" stroke-width="22" stroke-linecap="round"/>
+  <!-- 'vision' dot: capture spark -->
+  <circle cx="360" cy="160" r="20" fill="#fed9b7"/>
+</svg>

@@ -32,6 +32,20 @@ db.exec('PRAGMA foreign_keys = ON;');
 /* ------------------------------------------------------------------ */
 export function migrate() {
   db.exec(`
+    CREATE TABLE IF NOT EXISTS users (
+      id            TEXT PRIMARY KEY,
+      email         TEXT UNIQUE,
+      name          TEXT NOT NULL DEFAULT '',
+      role          TEXT NOT NULL DEFAULT 'user',   -- user | admin
+      password_hash TEXT,                            -- null for OAuth-only accounts
+      provider      TEXT NOT NULL DEFAULT 'local',   -- local | google | github | wechat
+      provider_id   TEXT,                            -- subject id from the OAuth provider
+      created_at    TEXT NOT NULL,
+      updated_at    TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_users_provider ON users(provider, provider_id)
+      WHERE provider_id IS NOT NULL;
+
     CREATE TABLE IF NOT EXISTS experiments (
       id          TEXT PRIMARY KEY,
       title       TEXT NOT NULL,
@@ -113,6 +127,34 @@ export function fingerprint(str) {
   for (let i = 0; i < str.length; i++) { h = ((h << 5) + h) + str.charCodeAt(i); h |= 0; }
   return (h >>> 0).toString(16).padStart(8, '0');
 }
+
+/* ------------------------------------------------------------------ */
+/* Users                                                               */
+/* ------------------------------------------------------------------ */
+const publicUser = u => u && ({ id: u.id, email: u.email, name: u.name, role: u.role, provider: u.provider, created_at: u.created_at });
+
+export const Users = {
+  count() { return db.prepare('SELECT COUNT(*) n FROM users').get().n; },
+  list() { return db.prepare('SELECT * FROM users ORDER BY created_at ASC').all().map(publicUser); },
+  getById(uid) { return db.prepare('SELECT * FROM users WHERE id = ?').get(uid); },
+  getByEmail(email) { return email ? db.prepare('SELECT * FROM users WHERE email = ? COLLATE NOCASE').get(email) : null; },
+  getByProvider(provider, providerId) {
+    return db.prepare('SELECT * FROM users WHERE provider = ? AND provider_id = ?').get(provider, providerId);
+  },
+  create({ email = null, name = '', role = 'user', passwordHash = null, provider = 'local', providerId = null }) {
+    const _id = id(), t = now();
+    db.prepare(`INSERT INTO users (id,email,name,role,password_hash,provider,provider_id,created_at,updated_at)
+                VALUES (?,?,?,?,?,?,?,?,?)`)
+      .run(_id, email, name, role, passwordHash, provider, providerId, t, t);
+    return this.getById(_id);
+  },
+  setRole(uid, role) {
+    db.prepare('UPDATE users SET role=?, updated_at=? WHERE id=?').run(role, now(), uid);
+    return publicUser(this.getById(uid));
+  },
+  countAdmins() { return db.prepare("SELECT COUNT(*) n FROM users WHERE role='admin'").get().n; },
+  public: publicUser
+};
 
 /* ------------------------------------------------------------------ */
 /* Audit                                                               */

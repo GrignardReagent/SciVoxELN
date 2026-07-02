@@ -1,9 +1,21 @@
+# Dependencies — reinstalled from package.json / package-lock.json (`npm install`)
 node_modules/
-data/
-uploads/
+
+# Runtime state — must NOT be committed (contains the live database + user data)
+data/            # SQLite database (scivox.db) and WAL/journal files
+uploads/         # user-uploaded scanned note images (if written outside data/)
+
+# Logs
 *.log
+
+# Local environment config — may hold secrets; copy from .env.example instead
 .env
+
+# OS / editor cruft
 .DS_Store
-# legacy single-file prototype
+
+# Legacy standalone prototype — kept for reference, not part of the app
 SciVox-ELN.html
+
+# Sandbox sync-probe file created during development
 .synccheck

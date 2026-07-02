@@ -3,6 +3,10 @@
 Guidance for AI assistants (and humans) working in this repo. Read this before
 making changes.
 
+> **Progress log:** read `PROGRESS.md` at the start of a session and update it at
+> the end (dated Session-log entry; move items between Done / In progress /
+> Backlog). It's the source of truth for what's done vs. outstanding.
+
 ## What this is
 
 A voice- and vision-powered **Electronic Lab Notebook**. Full-stack web app,
@@ -38,9 +42,13 @@ compliance/on-prem angle (clean rooms, classified data, 21 CFR Part 11 / GxP).
 2. **Every write goes through the audit log.** After a mutating route succeeds,
    call `Audit.log(user, role, ACTION, detail)`. Actions are SCREAMING_SNAKE
    (e.g. `SIGN_ENTRY`, `CONSUME_INVENTORY`).
-3. **Identity comes from middleware.** `src/index.js` reads `x-user-name` /
-   `x-user-role` headers into `req.user`. Auth is stubbed; this is where real
-   SSO/JWT/RBAC plugs in. The frontend sends these via `public/js/api.js`.
+3. **Identity comes from the session, server-side.** `src/auth.js` provides
+   `authenticate` (reads the signed HttpOnly session cookie → `req.user`),
+   `requireAuth`, and `requireRole('admin')` (hierarchy: user < admin). All
+   `/api` data routes are mounted behind `requireAuth` in `src/index.js`; never
+   trust client headers for identity. Passwords are scrypt (`node:crypto`);
+   OAuth (Google/GitHub/WeChat) lives in `src/oauth.js`, env-gated. First user
+   and `ADMIN_EMAILS` become admin. Users table + repo are in `src/db.js`.
 4. **Immutability is enforced server-side.** Locked experiments reject new
    entries (409). Signed entries can't be re-signed. Don't move these checks to
    the client.
@@ -53,17 +61,40 @@ compliance/on-prem angle (clean rooms, classified data, 21 CFR Part 11 / GxP).
    `params` (e.g. `ctx.go('experiments', { id })`); planner keeps its own
    `openId` module-local state.
 
+## AI assistant
+
+- `src/routes/ai.js` proxies OpenAI Chat Completions. **The API key
+  (`OPENAI_API_KEY`) is server-side only** — in gitignored `.env`, never sent to
+  the browser or committed. `OPENAI_MODEL` defaults to `gpt-5.5`;
+  `OPENAI_BASE_URL` allows Azure/compatible proxies (and testing against a mock).
+- The server injects the current experiment's context as the system message; the
+  client only sends user/assistant turns. Frontend panel is `mountAssistant()` in
+  `public/js/views/experiments.js` (right column), calling `api.aiChat()`.
+- `.env` is loaded via `node --env-file-if-exists=.env` (package.json scripts);
+  Docker passes `OPENAI_*` through compose. No dotenv dependency.
+
 ## Voice & OCR
 
 - Voice = **Web Speech API** in `public/js/voice.js` (`VoiceController`), with
   Start/Pause/Resume/Stop. It streams audio to the browser vendor's cloud —
   **not on-device**. This is called out in the README and Settings.
-- Server STT is **Whisper-ready but stubbed**: `src/routes/stt.js`. Enable with
-  `STT_PROVIDER=whisper` (+ implement `transcribe()` or set `STT_URL`). Keep the
-  frontend seam intact so it can switch automatically.
-- OCR = **Tesseract.js**, entirely in-browser (`public/js/ocr.js`). The scanned
-  image is uploaded to `/api/uploads` and stored with the entry.
+- Server STT is **wired to a real Whisper container**. Default stays
+  `webspeech`; set `STT_PROVIDER=whisper` and run `docker compose --profile
+  whisper up` to use the on-prem `onerahmet/openai-whisper-asr-webservice`
+  service. `transcribe()` in `src/routes/stt.js` forwards audio to its `/asr`
+  endpoint. In Whisper mode the frontend records with `public/js/recorder.js`
+  (MediaRecorder) and POSTs to `/api/stt/transcribe`; in webspeech mode it uses
+  `voice.js`. The composer picks the mode from `GET /api/stt/health`.
+- OCR = **Tesseract.js**, entirely in-browser (`public/js/ocr.js`). Image comes
+  from a file upload **or the live camera** (`getUserMedia`, rear camera via
+  `facingMode:'environment'`); it's uploaded to `/api/uploads` and stored.
 - Both need Chrome/Edge and a secure context (`https://` or `localhost`).
+- **Theming** in `public/js/theme.js`: light/dark presets with a user-editable
+  5-colour palette; applies CSS variables and caches them so an inline `<head>`
+  script in `index.html` can paint without flash. Toggle in the top bar; full
+  customiser in Settings → Appearance.
+- **Mobile**: sidebar becomes a slide-in drawer under 900px (hamburger in
+  `.top`, scrim overlay), wired in `public/js/app.js`.
 
 ## Data & config
 
@@ -113,6 +144,6 @@ plan start → audit CSV. Frontend voice/OCR need a real browser.
 - Real authentication (SSO/JWT/RBAC) + server-derived identity.
 - Cryptographic signatures/hashing.
 - LIMS/instrument connectors and scheduled on-prem→cloud sync (from the pitch).
-- Optional Whisper container wired into docker-compose.
+- GPU Whisper option / model tuning (base model wired; see docker-compose.yml).
 - `SciVox-ELN.html` at the repo root is the original standalone single-file
   prototype — kept for reference, gitignored, not part of the app.

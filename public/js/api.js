@@ -1,18 +1,22 @@
-/** Thin REST client. Injects the acting user's identity into every request. */
-import { getIdentity } from './state.js';
+/** Thin REST client. Auth is cookie-based (same-origin fetch sends the session
+ *  cookie automatically); no identity headers are sent from the client. */
 
 async function req(method, path, body) {
-  const id = getIdentity();
-  const headers = {
-    'x-user-name': encodeURIComponent(id.name || 'Unknown'),
-    'x-user-role': encodeURIComponent(id.role || '')
-  };
+  const headers = {};
   if (body !== undefined) headers['content-type'] = 'application/json';
-  const res = await fetch(path, { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined });
+  const res = await fetch(path, {
+    method, headers,
+    credentials: 'same-origin',
+    body: body !== undefined ? JSON.stringify(body) : undefined
+  });
+  if (res.status === 401 && !path.endsWith('/auth/me')) {
+    // session expired mid-use — bounce to login
+    window.dispatchEvent(new CustomEvent('scivox:unauthorized'));
+  }
   if (!res.ok) {
     let msg = res.statusText;
     try { msg = (await res.json()).error || msg; } catch {}
-    throw new Error(msg);
+    const err = new Error(msg); err.status = res.status; throw err;
   }
   if (res.status === 204) return null;
   const ct = res.headers.get('content-type') || '';
@@ -20,6 +24,15 @@ async function req(method, path, body) {
 }
 
 export const api = {
+  // auth
+  me: () => req('GET', '/api/auth/me'),
+  providers: () => req('GET', '/api/auth/providers'),
+  register: d => req('POST', '/api/auth/register', d),
+  login: d => req('POST', '/api/auth/login', d),
+  logout: () => req('POST', '/api/auth/logout'),
+  // admin users
+  users: () => req('GET', '/api/users'),
+  setUserRole: (id, role) => req('PATCH', `/api/users/${id}/role`, { role }),
   // experiments
   experiments: () => req('GET', '/api/experiments'),
   experiment: id => req('GET', `/api/experiments/${id}`),
@@ -43,15 +56,24 @@ export const api = {
   updateItem: (id, d) => req('PATCH', `/api/inventory/${id}`, d),
   adjustItem: (id, d) => req('POST', `/api/inventory/${id}/adjust`, d),
   deleteItem: id => req('DELETE', `/api/inventory/${id}`),
-  // audit + stt
+  // audit + stt + ai
   audit: () => req('GET', '/api/audit'),
   sttHealth: () => req('GET', '/api/stt/health'),
-  // uploads (multipart, handled separately)
+  aiHealth: () => req('GET', '/api/ai/health'),
+  aiChat: (experimentId, messages) => req('POST', '/api/ai/chat', { experimentId, messages }),
+  // uploads
   async uploadImage(file) {
     const fd = new FormData();
     fd.append('image', file);
-    const res = await fetch('/api/uploads', { method: 'POST', body: fd });
+    const res = await fetch('/api/uploads', { method: 'POST', body: fd, credentials: 'same-origin' });
     if (!res.ok) throw new Error('Upload failed');
+    return res.json();
+  },
+  async transcribe(blob) {
+    const fd = new FormData();
+    fd.append('audio', blob, 'audio.webm');
+    const res = await fetch('/api/stt/transcribe', { method: 'POST', body: fd, credentials: 'same-origin' });
+    if (!res.ok) { let m = res.statusText; try { m = (await res.json()).error || m; } catch {} throw new Error(m); }
     return res.json();
   }
 };

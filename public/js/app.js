@@ -1,13 +1,22 @@
-/** App shell: navigation, identity footer, global search, and view routing. */
-import { getIdentity } from './state.js';
+/** App shell: authentication gating, navigation, mobile drawer, and routing. */
+import { api } from './api.js';
+import { getUser, setUser, isAdmin, initials } from './state.js';
+import { renderAuth } from './views/auth.js';
 import { renderDashboard } from './views/dashboard.js';
 import { renderExperiments, renderExperiment } from './views/experiments.js';
 import { renderPlanner } from './views/planner.js';
 import { renderInventory } from './views/inventory.js';
 import { renderAudit } from './views/audit.js';
+import { renderUsers } from './views/users.js';
 import { renderSettings } from './views/settings.js';
+import { toast } from './ui.js';
+import { initTheme, toggleMode } from './theme.js';
+
+initTheme();
 
 const content = document.getElementById('content');
+const appRoot = document.getElementById('appRoot');
+const authScreen = document.getElementById('authScreen');
 const state = { view: 'dashboard', params: {}, search: '' };
 
 const views = {
@@ -16,6 +25,7 @@ const views = {
   planner: () => renderPlanner(content, ctx),
   inventory: () => renderInventory(content, ctx),
   audit: () => renderAudit(content, ctx),
+  users: () => renderUsers(content, ctx),
   settings: () => renderSettings(content, ctx)
 };
 
@@ -23,7 +33,9 @@ const ctx = {
   go,
   get search() { return state.search; },
   setHead,
-  refresh: () => views[state.view] && views[state.view]()
+  refresh: () => views[state.view] && views[state.view](),
+  logout,
+  get user() { return getUser(); }
 };
 
 function setHead(title, sub = '') {
@@ -32,36 +44,68 @@ function setHead(title, sub = '') {
 }
 
 function go(view, params = {}) {
-  state.view = view;
-  state.params = params;
+  if (view === 'users' && !isAdmin()) view = 'dashboard';
+  state.view = view; state.params = params;
   document.querySelectorAll('#nav button').forEach(b => b.classList.toggle('on', b.dataset.view === view));
-  refreshIdentity();
+  closeDrawer();
   (views[view] || views.dashboard)();
 }
 
-function refreshIdentity() {
-  const u = getIdentity();
-  document.getElementById('userFoot').textContent = u.name || 'Set identity';
-  document.getElementById('roleFoot').textContent = u.role || '—';
-  document.getElementById('avaFoot').textContent = (u.initials || (u.name ? u.name[0] : '?')).toUpperCase();
+/* ---------------- auth gating ---------------- */
+async function boot() {
+  try {
+    const user = await api.me();
+    setUser(user);
+    showApp();
+  } catch {
+    showAuth();
+  }
 }
 
-// Nav wiring
-document.querySelectorAll('#nav button').forEach(b => {
-  b.addEventListener('click', () => go(b.dataset.view));
-});
+function showAuth() {
+  appRoot.style.display = 'none';
+  authScreen.style.display = 'flex';
+  renderAuth(authScreen, user => { setUser(user); showApp(); });
+}
 
-// Global search re-renders the current list view
+function showApp() {
+  authScreen.style.display = 'none';
+  appRoot.style.display = '';
+  const u = getUser();
+  document.getElementById('userFoot').textContent = u.name || u.email || 'User';
+  document.getElementById('roleFoot').textContent = u.role === 'admin' ? 'Administrator' : 'User';
+  document.getElementById('avaFoot').textContent = initials(u);
+  document.querySelectorAll('[data-admin]').forEach(el => el.style.display = isAdmin() ? '' : 'none');
+  go('dashboard');
+}
+
+async function logout() {
+  try { await api.logout(); } catch {}
+  setUser(null);
+  showAuth();
+}
+
+/* ---------------- wiring ---------------- */
+document.querySelectorAll('#nav button').forEach(b => b.addEventListener('click', () => go(b.dataset.view)));
+document.getElementById('logoutBtn').addEventListener('click', logout);
+
 const searchBox = document.getElementById('globalSearch');
 searchBox.addEventListener('input', e => {
   state.search = e.target.value.trim().toLowerCase();
-  if (['experiments', 'inventory', 'audit', 'planner'].includes(state.view) && !state.params.id) {
-    (views[state.view])();
-  }
+  if (['experiments', 'inventory', 'audit', 'planner', 'users'].includes(state.view) && !state.params.id) views[state.view]();
 });
 
-// expose for inline handlers used inside views (kept minimal)
-window.__scivox = { go };
+// Session expiry mid-use → back to login
+window.addEventListener('scivox:unauthorized', () => { setUser(null); showAuth(); toast('Session expired — please sign in', true); });
 
-refreshIdentity();
-go('dashboard');
+/* mobile drawer */
+const side = document.getElementById('side');
+const scrim = document.getElementById('scrim');
+function openDrawer() { side.classList.add('open'); scrim.classList.add('on'); }
+function closeDrawer() { side.classList.remove('open'); scrim.classList.remove('on'); }
+document.getElementById('hamburger').addEventListener('click', openDrawer);
+scrim.addEventListener('click', closeDrawer);
+document.getElementById('themeToggle').addEventListener('click', () => { toggleMode(); if (state.view === 'settings') ctx.refresh(); });
+
+window.__scivox = { go };
+boot();

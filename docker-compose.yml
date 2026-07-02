@@ -7,12 +7,33 @@ services:
     environment:
       PORT: 3000
       DATA_DIR: /app/data
-      SEED: "true"            # set "false" to skip demo seeding on an empty DB
-      STT_PROVIDER: webspeech # set "whisper" to route voice through a self-hosted engine
-      # STT_URL: http://whisper:9000
+      SEED: "true"                              # set "false" to skip demo seeding on an empty DB
+      STT_PROVIDER: ${STT_PROVIDER:-webspeech}  # webspeech | whisper
+      STT_URL: ${STT_URL:-http://whisper:9000}  # used when STT_PROVIDER=whisper
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}       # AI assistant (read from .env; never committed)
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5.5}    # OpenAI chat model for the assistant
     volumes:
-      - scivox-data:/app/data # SQLite database + uploaded scans
+      - scivox-data:/app/data                   # SQLite database + uploaded scans
+    restart: unless-stopped
+
+  # Self-hosted speech-to-text. Only starts with the "whisper" profile:
+  #   STT_PROVIDER=whisper docker compose --profile whisper up --build
+  # First run downloads the model into the whisper-cache volume (a few minutes).
+  whisper:
+    image: onerahmet/openai-whisper-asr-webservice:latest
+    container_name: scivox-whisper
+    profiles: ["whisper"]
+    environment:
+      ASR_MODEL: ${ASR_MODEL:-base}             # tiny | base | small | medium | large-v3
+      ASR_ENGINE: ${ASR_ENGINE:-faster_whisper} # faster_whisper is CPU-friendly
+    volumes:
+      - whisper-cache:/root/.cache              # persists downloaded models
+    expose:
+      - "9000"                                  # reachable in-network as http://whisper:9000
+    # ports:                                    # uncomment to hit the ASR API directly from the host
+    #   - "9000:9000"
     restart: unless-stopped
 
 volumes:
   scivox-data:
+  whisper-cache:

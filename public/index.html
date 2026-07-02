@@ -2,16 +2,29 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
 <title>SciVox ELN</title>
+<link rel="icon" type="image/svg+xml" href="/icon.svg" />
+<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
+<link rel="apple-touch-icon" href="/apple-touch-icon.png" />
 <link rel="stylesheet" href="/css/styles.css" />
+<!-- Apply the saved theme before first paint to avoid a flash of the default. -->
+<script>
+  try {
+    var v = JSON.parse(localStorage.getItem('scivox_theme_vars'));
+    if (v) { var r = document.documentElement; for (var k in v) r.style.setProperty(k, v[k]); }
+  } catch (e) {}
+</script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/5.1.1/tesseract.min.js" defer></script>
 </head>
 <body>
-<div class="app">
-  <aside class="side">
+<div id="authScreen" class="auth-screen" style="display:none"></div>
+
+<div class="app" id="appRoot" style="display:none">
+  <div class="scrim" id="scrim"></div>
+  <aside class="side" id="side">
     <div class="brand">
-      <div class="logo">Sv</div>
+      <img class="logo-img" src="/icon.svg" alt="" width="36" height="36" />
       <div><b>SciVox ELN</b><small>Voice &amp; Vision Notebook</small></div>
     </div>
     <nav class="nav" id="nav">
@@ -20,23 +33,26 @@
       <button data-view="planner"><span class="ic">🧪</span> Planner</button>
       <button data-view="inventory"><span class="ic">📦</span> Inventory</button>
       <button data-view="audit"><span class="ic">🛡</span> Audit Trail</button>
+      <button data-view="users" data-admin style="display:none"><span class="ic">👥</span> Users</button>
       <button data-view="settings"><span class="ic">⚙</span> Settings</button>
     </nav>
     <div class="foot">
       <div class="whoami">
         <div class="ava" id="avaFoot">?</div>
-        <div><div id="userFoot" class="who-name">Set identity</div><div id="roleFoot" class="muted">—</div></div>
+        <div style="min-width:0"><div id="userFoot" class="who-name">—</div><div id="roleFoot" class="muted">—</div></div>
       </div>
-      <div class="foot-note">21 CFR Part 11 · GxP-style audit log</div>
+      <button class="btn ghost sm" id="logoutBtn" style="margin-top:10px;width:100%">Sign out</button>
     </div>
   </aside>
   <main class="main">
     <div class="top">
+      <button class="hamburger" id="hamburger" aria-label="Menu">☰</button>
       <div>
         <h1 id="topTitle">Dashboard</h1>
         <div class="sub" id="topSub"></div>
       </div>
       <div class="grow"></div>
+      <button class="theme-toggle" id="themeToggle" title="Toggle light / dark">◐</button>
       <div class="search">
         <span class="muted">🔎</span>
         <input id="globalSearch" placeholder="Search…" autocomplete="off" />
@@ -45,6 +61,7 @@
     <div class="content" id="content"></div>
   </main>
 </div>
+
 <div class="overlay" id="overlay"><div class="modal" id="modal"></div></div>
 <div class="flash" id="flash"></div>
 <script type="module" src="/js/app.js"></script>
