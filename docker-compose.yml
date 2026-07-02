@@ -1,0 +1,18 @@
+services:
+  scivox:
+    build: .
+    container_name: scivox-eln
+    ports:
+      - "3000:3000"
+    environment:
+      PORT: 3000
+      DATA_DIR: /app/data
+      SEED: "true"            # set "false" to skip demo seeding on an empty DB
+      STT_PROVIDER: webspeech # set "whisper" to route voice through a self-hosted engine
+      # STT_URL: http://whisper:9000
+    volumes:
+      - scivox-data:/app/data # SQLite database + uploaded scans
+    restart: unless-stopped
+
+volumes:
+  scivox-data:

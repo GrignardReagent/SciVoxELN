@@ -1,0 +1,9 @@
+node_modules/
+data/
+uploads/
+*.log
+.env
+.DS_Store
+# legacy single-file prototype
+SciVox-ELN.html
+.synccheck

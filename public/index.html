@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SciVox ELN</title>
+<link rel="stylesheet" href="/css/styles.css" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/5.1.1/tesseract.min.js" defer></script>
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <div class="brand">
+      <div class="logo">Sv</div>
+      <div><b>SciVox ELN</b><small>Voice &amp; Vision Notebook</small></div>
+    </div>
+    <nav class="nav" id="nav">
+      <button data-view="dashboard" class="on"><span class="ic">▦</span> Dashboard</button>
+      <button data-view="experiments"><span class="ic">⚗</span> Experiments</button>
+      <button data-view="planner"><span class="ic">🧪</span> Planner</button>
+      <button data-view="inventory"><span class="ic">📦</span> Inventory</button>
+      <button data-view="audit"><span class="ic">🛡</span> Audit Trail</button>
+      <button data-view="settings"><span class="ic">⚙</span> Settings</button>
+    </nav>
+    <div class="foot">
+      <div class="whoami">
+        <div class="ava" id="avaFoot">?</div>
+        <div><div id="userFoot" class="who-name">Set identity</div><div id="roleFoot" class="muted">—</div></div>
+      </div>
+      <div class="foot-note">21 CFR Part 11 · GxP-style audit log</div>
+    </div>
+  </aside>
+  <main class="main">
+    <div class="top">
+      <div>
+        <h1 id="topTitle">Dashboard</h1>
+        <div class="sub" id="topSub"></div>
+      </div>
+      <div class="grow"></div>
+      <div class="search">
+        <span class="muted">🔎</span>
+        <input id="globalSearch" placeholder="Search…" autocomplete="off" />
+      </div>
+    </div>
+    <div class="content" id="content"></div>
+  </main>
+</div>
+<div class="overlay" id="overlay"><div class="modal" id="modal"></div></div>
+<div class="flash" id="flash"></div>
+<script type="module" src="/js/app.js"></script>
+</body>
+</html>

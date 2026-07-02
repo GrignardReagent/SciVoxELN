@@ -1,0 +1,21 @@
+{
+  "name": "scivox-eln",
+  "version": "1.0.0",
+  "description": "SciVox ELN — a voice- and vision-powered Electronic Lab Notebook with a compliant audit trail, experiment planner and inventory.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "seed": "node src/seed.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "multer": "^2.0.0"
+  },
+  "author": "SciVox",
+  "license": "UNLICENSED"
+}
