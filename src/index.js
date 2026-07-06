@@ -27,6 +27,7 @@ import stt from './routes/stt.js';
 import uploads from './routes/uploads.js';
 import ai from './routes/ai.js';
 import references from './routes/references.js';
+import figureTemplates from './routes/figure-templates.js';
 import search from './routes/search.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -87,6 +88,7 @@ app.use('/api/stt', requireAuth, stt);
 app.use('/api/uploads', requireAuth, uploads);
 app.use('/api/ai', requireAuth, ai);
 app.use('/api/references', requireAuth, references);
+app.use('/api/figure-templates', requireAuth, figureTemplates);
 app.use('/api/search', requireAuth, search);
 app.use('/api/users', requireAuth, users); // users routes further require the admin role
 

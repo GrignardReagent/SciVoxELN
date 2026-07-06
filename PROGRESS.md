@@ -126,6 +126,18 @@ trail, self-hosted Whisper option, theming, mobile support, and MVP API tests.
   soft fills, crisp outlines and no default labels.
 - Refined biological templates so synapse, cell and neuron insertions read as
   presynaptic/postsynaptic membrane scaffolds, organic cells and branched neurons.
+- Added a simplified sagittal mouse brain section template for neuroanatomy
+  sketches, based on atlas-style region scaffolding but kept local and editable.
+- Added hackathon-demo figure copilot pieces: experimental workflow, multi-panel
+  figure layout and graphical abstract scaffolds; clean export style modes; and
+  a draft-legend helper using experiment context, inserted templates and labels.
+- Added project-scoped reusable sketch templates: users can save current strokes
+  and labels as templates, reinsert or delete saved templates, and template
+  create/delete actions are audited.
+- Saved sketch templates now include the smoothed clean-preview PNG and reinsert
+  it as a clear scaffold underlay, while retaining strokes/labels metadata.
+- Changed the sketchpad to start from a blank canvas by default; the microscope
+  slide guide is now opt-in via the Slide template button.
 - Added imported-image underlays in the sketchpad: images are fitted faintly
   behind the canvas so users can sketch on top, clear them, and include them in
   raw/clean figure exports.

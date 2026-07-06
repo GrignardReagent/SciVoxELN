@@ -229,6 +229,18 @@ export function migrate() {
       created_by    TEXT DEFAULT ''
     );
     CREATE INDEX IF NOT EXISTS idx_refs_exp ON paper_refs(experiment_id);
+
+    CREATE TABLE IF NOT EXISTS figure_templates (
+      id                 TEXT PRIMARY KEY,
+      project_id         TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      name               TEXT NOT NULL,
+      template_json      TEXT NOT NULL,
+      created_by         TEXT DEFAULT '',
+      created_by_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+      created_at         TEXT NOT NULL,
+      updated_at         TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_figure_templates_project ON figure_templates(project_id, updated_at DESC);
   `);
 
   addColumn('users', 'email_verified_at', 'TEXT');
@@ -617,6 +629,42 @@ export const Refs = {
     return this.get(_id);
   },
   remove(refId) { return db.prepare('DELETE FROM paper_refs WHERE id = ?').run(refId).changes > 0; }
+};
+
+/* ------------------------------------------------------------------ */
+/* Reusable sketch-to-figure templates                                 */
+/* ------------------------------------------------------------------ */
+function parseFigureTemplate(row) {
+  if (!row) return null;
+  let template = {};
+  try { template = JSON.parse(row.template_json || '{}'); } catch { template = {}; }
+  const { template_json: _templateJson, ...rest } = row;
+  return { ...rest, template };
+}
+
+export const FigureTemplates = {
+  listByProject(projectId) {
+    return db.prepare(`SELECT ft.*, u.name AS created_by_name, u.email AS created_by_email
+      FROM figure_templates ft LEFT JOIN users u ON u.id=ft.created_by_user_id
+      WHERE ft.project_id=?
+      ORDER BY ft.updated_at DESC, ft.name COLLATE NOCASE`).all(projectId).map(parseFigureTemplate);
+  },
+  get(templateId) {
+    return parseFigureTemplate(db.prepare(`SELECT ft.*, u.name AS created_by_name, u.email AS created_by_email
+      FROM figure_templates ft LEFT JOIN users u ON u.id=ft.created_by_user_id
+      WHERE ft.id=?`).get(templateId));
+  },
+  create({ project_id, name, template, created_by = '', created_by_user_id = null }) {
+    const _id = id(), t = now();
+    db.prepare(`INSERT INTO figure_templates (id,project_id,name,template_json,created_by,created_by_user_id,created_at,updated_at)
+                VALUES (?,?,?,?,?,?,?,?)`)
+      .run(_id, project_id, String(name || 'Untitled template').slice(0, 160), JSON.stringify(template || {}),
+           String(created_by || '').slice(0, 200), created_by_user_id, t, t);
+    return this.get(_id);
+  },
+  remove(templateId) {
+    return db.prepare('DELETE FROM figure_templates WHERE id = ?').run(templateId).changes > 0;
+  }
 };
 
 /* ------------------------------------------------------------------ */

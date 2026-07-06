@@ -158,6 +158,9 @@ tr.flag-expired td:first-child{box-shadow:inset 3px 0 var(--danger)}
 .sketch-label-input{max-width:220px}
 .sketch-prompt-input{max-width:230px}
 .sketch-template-select{max-width:190px}
+.sketch-template-name{max-width:190px}
+.sketch-saved-select{max-width:210px}
+.sketch-style-select{max-width:190px}
 .sketch-tools input[type=range]{width:120px;accent-color:var(--accent)}
 .sketch-slider{display:inline-flex;align-items:center;gap:7px;color:var(--muted);font-size:12px;font-weight:700;background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:6px 9px}
 .sketch-slider output{min-width:24px;text-align:right;color:var(--ink);font-variant-numeric:tabular-nums}
@@ -171,6 +174,7 @@ tr.flag-expired td:first-child{box-shadow:inset 3px 0 var(--danger)}
 .figure-preview{max-width:320px;width:100%;background:#fff;border:1px solid var(--line);border-radius:8px;display:block}
 .sketch-actions{margin-top:10px;align-items:stretch}
 .sketch-actions .txt{flex:1;min-width:240px}
+.sketch-caption{min-height:62px}
 
 /* ---- experiment observer ---- */
 .modal-observe{max-width:1120px;padding:18px}
@@ -217,6 +221,9 @@ tr.flag-expired td:first-child{box-shadow:inset 3px 0 var(--danger)}
   .sketch-label-input{max-width:none}
   .sketch-prompt-input{max-width:none}
   .sketch-template-select{max-width:none}
+  .sketch-template-name{max-width:none}
+  .sketch-saved-select{max-width:none}
+  .sketch-style-select{max-width:none}
   .sketch-slider{width:100%;justify-content:space-between}
   .sketch-slider input{flex:1}
   /* comfortable tap targets */

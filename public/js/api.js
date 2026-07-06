@@ -84,6 +84,10 @@ export const api = {
   importReferences: (experimentId, text) => req('POST', '/api/references/import', { experimentId, text }),
   importZotero: (experimentId, d) => req('POST', '/api/references/zotero', { experimentId, ...d }),
   deleteReference: id => req('DELETE', `/api/references/${id}`),
+  // sketch-to-figure reusable templates
+  figureTemplates: experimentId => req('GET', `/api/figure-templates?experimentId=${encodeURIComponent(experimentId)}`),
+  saveFigureTemplate: (experimentId, d) => req('POST', '/api/figure-templates', { experimentId, ...d }),
+  deleteFigureTemplate: id => req('DELETE', `/api/figure-templates/${id}`),
   // uploads
   async uploadImage(file, filename, kind = '', experimentId = '') {
     const fd = new FormData();
