@@ -28,3 +28,4 @@
 - [x] Make this mobile friendly. — dvh height, 16px inputs (no iOS zoom),
   horizontally-scrollable tables, safe-area insets, tighter small-screen layout,
   stacked AI input, theme-color; on top of the existing nav drawer.
+- [ ] Feature: Allow user to sketch workflows

@@ -113,6 +113,11 @@ trail, self-hosted Whisper option, theming, mobile support, and MVP API tests.
   the `audit(project_id)` index only after adding the column. Added a legacy-DB
   migration regression test; rebuilt the prototype and verified the public
   Cloudflare URL returns `200`.
+- Configured `.env` for `scivoxeln.duckdns.org` and started the Caddy public
+  profile. App and Caddy containers run, but Let's Encrypt cannot validate yet
+  because public TCP 80/443 to `192.41.125.255` time out; next step is router /
+  network / Windows firewall forwarding to the Windows Wi-Fi host
+  `10.124.117.174`.
 
 ### 2026-07-06
 - Advised on free permanent-domain options for SciVox ELN: free subdomain/DDNS
