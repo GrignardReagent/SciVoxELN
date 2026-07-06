@@ -92,9 +92,15 @@ r.post('/:id/entries', (req, res) => {
   if (exp.status === 'locked') return res.status(409).json({ error: 'Experiment is locked (read-only)' });
   const { text } = req.body || {};
   if (!text || !text.trim()) return res.status(400).json({ error: 'Entry text is required' });
+  const sourceEntryIds = Array.from(new Set((req.body?.sourceEntryIds || []).map(String).filter(Boolean))).slice(0, 40);
+  if (sourceEntryIds.length) {
+    const sources = Entries.getManyDetailed(sourceEntryIds, req.user);
+    if (sources.length !== sourceEntryIds.length || sources.some(s => s.experiment_id !== exp.id))
+      return res.status(400).json({ error: 'Source entries must belong to this experiment' });
+  }
   const entry = Entries.create(exp.id, {
     type: req.body.type, text, imageUrl: req.body.imageUrl || null,
-    author: req.user.name, role: req.user.role
+    author: req.user.name, role: req.user.role, sourceEntryIds
   });
   if (entry.type === 'observe') {
     Audit.log(req.user.name, req.user.role, 'ADD_OBSERVE_ENTRY',

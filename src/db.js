@@ -52,6 +52,19 @@ function placeholders(values) {
   return values.map(() => '?').join(',');
 }
 
+function parseJsonArray(value) {
+  try {
+    const parsed = JSON.parse(value || '[]');
+    return Array.isArray(parsed) ? parsed.map(String).filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
+function cleanEntryIds(values) {
+  return Array.from(new Set((Array.isArray(values) ? values : []).map(String).filter(Boolean))).slice(0, 40);
+}
+
 /* ------------------------------------------------------------------ */
 /* Schema and idempotent migrations                                    */
 /* ------------------------------------------------------------------ */
@@ -148,6 +161,7 @@ export function migrate() {
       text              TEXT NOT NULL,
       image_url         TEXT,
       hash              TEXT NOT NULL,
+      source_entry_ids  TEXT DEFAULT '[]',
       signed_by         TEXT,
       signed_role       TEXT,
       signed_at         TEXT,
@@ -156,7 +170,8 @@ export function migrate() {
       deleted_at        TEXT,
       deleted_by        TEXT,
       delete_reason     TEXT,
-      created_at        TEXT NOT NULL
+      created_at        TEXT NOT NULL,
+      updated_at        TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_entries_exp ON entries(experiment_id);
 
@@ -235,6 +250,8 @@ export function migrate() {
   addColumn('entries', 'deleted_at', 'TEXT');
   addColumn('entries', 'deleted_by', 'TEXT');
   addColumn('entries', 'delete_reason', 'TEXT');
+  addColumn('entries', 'source_entry_ids', "TEXT DEFAULT '[]'");
+  addColumn('entries', 'updated_at', 'TEXT');
   addColumn('plans', 'project_id', 'TEXT');
   addColumn('audit', 'project_id', 'TEXT');
   addColumn('audit', 'previous_hash', "TEXT DEFAULT ''");
@@ -555,17 +572,73 @@ export const Experiments = {
 };
 
 export const Entries = {
-  create(expId, { type = 'note', author = 'Unknown', role = '', text, imageUrl = null }) {
+  list(user = null) {
+    const select = `SELECT en.*, e.title AS experiment_title, e.status AS experiment_status,
+      e.project_id, p.name AS project_name, o.name AS org_name
+      FROM entries en
+      JOIN experiments e ON e.id=en.experiment_id
+      LEFT JOIN projects p ON p.id=e.project_id
+      LEFT JOIN orgs o ON o.id=p.org_id
+      WHERE en.deleted_at IS NULL`;
+    if (user?.role === 'admin') return db.prepare(`${select} ORDER BY en.created_at DESC`).all();
+    const ids = Projects.idsForUser(user);
+    if (!ids.length) return [];
+    return db.prepare(`${select} AND e.project_id IN (${placeholders(ids)}) ORDER BY en.created_at DESC`).all(...ids);
+  },
+  create(expId, { type = 'note', author = 'Unknown', role = '', text, imageUrl = null, sourceEntryIds = [] }) {
     const _id = id(), t = now();
-    const fp = fingerprint(JSON.stringify({ experiment_id: expId, type, text, image_url: imageUrl || null, created_at: t }));
-    db.prepare(`INSERT INTO entries (id,experiment_id,type,author,role,text,image_url,hash,created_at)
-                VALUES (?,?,?,?,?,?,?,?,?)`)
-      .run(_id, expId, type, author, role, text, imageUrl, fp, t);
+    const sources = cleanEntryIds(sourceEntryIds);
+    const fp = fingerprint(JSON.stringify({ experiment_id: expId, type, text, image_url: imageUrl || null, source_entry_ids: sources, created_at: t }));
+    db.prepare(`INSERT INTO entries (id,experiment_id,type,author,role,text,image_url,hash,source_entry_ids,created_at,updated_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
+      .run(_id, expId, type, author, role, text, imageUrl, fp, JSON.stringify(sources), t, t);
     db.prepare('UPDATE experiments SET updated_at=? WHERE id=?').run(t, expId);
     return db.prepare('SELECT * FROM entries WHERE id = ?').get(_id);
   },
   get(entryId) {
     return db.prepare('SELECT * FROM entries WHERE id = ?').get(entryId);
+  },
+  getDetailed(entryId, user = null) {
+    const row = db.prepare(`SELECT en.*, e.title AS experiment_title, e.status AS experiment_status,
+      e.objective AS experiment_objective, e.project_id, p.name AS project_name, o.name AS org_name
+      FROM entries en
+      JOIN experiments e ON e.id=en.experiment_id
+      LEFT JOIN projects p ON p.id=e.project_id
+      LEFT JOIN orgs o ON o.id=p.org_id
+      WHERE en.id=? AND en.deleted_at IS NULL`).get(entryId);
+    if (!row) return null;
+    if (user && !Projects.canAccessProject(user, row.project_id, 'viewer')) return null;
+    return row;
+  },
+  getManyDetailed(entryIds, user = null) {
+    const ids = Array.from(new Set((entryIds || []).map(String).filter(Boolean))).slice(0, 40);
+    if (!ids.length) return [];
+    const rows = db.prepare(`SELECT en.*, e.title AS experiment_title, e.status AS experiment_status,
+      e.objective AS experiment_objective, e.project_id, p.name AS project_name, o.name AS org_name
+      FROM entries en
+      JOIN experiments e ON e.id=en.experiment_id
+      LEFT JOIN projects p ON p.id=e.project_id
+      LEFT JOIN orgs o ON o.id=p.org_id
+      WHERE en.id IN (${placeholders(ids)}) AND en.deleted_at IS NULL
+      ORDER BY en.created_at ASC`).all(...ids);
+    return user ? rows.filter(row => Projects.canAccessProject(user, row.project_id, 'viewer')) : rows;
+  },
+  update(entryId, { text }) {
+    const en = this.get(entryId);
+    if (!en || en.deleted_at) return en || null;
+    const t = now();
+    const fp = fingerprint(JSON.stringify({
+      experiment_id: en.experiment_id,
+      type: en.type,
+      text,
+      image_url: en.image_url || null,
+      source_entry_ids: parseJsonArray(en.source_entry_ids),
+      created_at: en.created_at,
+      updated_at: t
+    }));
+    db.prepare('UPDATE entries SET text=?, hash=?, updated_at=? WHERE id=?').run(text, fp, t, entryId);
+    db.prepare('UPDATE experiments SET updated_at=? WHERE id=?').run(t, en.experiment_id);
+    return this.get(entryId);
   },
   sign(entryId, { by, role, meaning = 'author' }) {
     const en = this.get(entryId);

@@ -73,6 +73,37 @@ test('MVP pilot workflow: projects, access, signatures, exports, audit and sessi
     });
     assert.match(entry.hash, /^[a-f0-9]{64}$/);
 
+    const edited = await scientist.req(base, 'PATCH', `/api/entries/${entry.id}`, {
+      text: 'Prepared formulation A and recorded visual clarity after thaw.'
+    });
+    assert.equal(edited.text, 'Prepared formulation A and recorded visual clarity after thaw.');
+    assert.notEqual(edited.hash, entry.hash);
+
+    const generated = await scientist.req(base, 'POST', `/api/experiments/${exp.id}/entries`, {
+      type: 'note',
+      text: 'AI-generated summary from one selected entry.',
+      sourceEntryIds: [entry.id]
+    });
+    assert.deepEqual(JSON.parse(generated.source_entry_ids), [entry.id]);
+
+    await assert.rejects(
+      () => scientist.req(base, 'DELETE', '/api/entries/batch', { entryIds: [generated.id] }),
+      /403/
+    );
+    const batchDeleted = await admin.req(base, 'DELETE', '/api/entries/batch', { entryIds: [generated.id] });
+    assert.equal(batchDeleted.deleted, 1);
+
+    const entries = await scientist.req(base, 'GET', '/api/entries');
+    const libraryEntry = entries.find(e => e.id === entry.id);
+    assert.equal(libraryEntry.experiment_title, exp.title);
+    assert.equal(libraryEntry.project_id, project.id);
+    assert.equal(entries.some(e => e.id === generated.id), false);
+
+    await assert.rejects(
+      () => scientist.req(base, 'POST', '/api/ai/process-entries', { entryIds: [entry.id], mode: 'summary' }),
+      /501/
+    );
+
     await assert.rejects(
       () => scientist.req(base, 'POST', `/api/entries/${entry.id}/sign`, { meaning: 'author', password: 'wrong-password' }),
       /401/
@@ -84,6 +115,11 @@ test('MVP pilot workflow: projects, access, signatures, exports, audit and sessi
     });
     assert.equal(signed.signature_meaning, 'author');
     assert.match(signed.sig, /^[a-f0-9]{64}$/);
+
+    await assert.rejects(
+      () => scientist.req(base, 'PATCH', `/api/entries/${entry.id}`, { text: 'cannot edit signed entry' }),
+      /409/
+    );
 
     await admin.req(base, 'POST', `/api/experiments/${exp.id}/lock`);
     await assert.rejects(
