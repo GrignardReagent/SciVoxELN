@@ -3,10 +3,15 @@
 
 export async function runOCR(imageSource, onProgress) {
   if (!window.Tesseract) throw new Error('OCR engine still loading — try again in a moment');
-  const res = await window.Tesseract.recognize(imageSource, 'eng', {
+  if (onProgress) onProgress(1, 'preprocessing image');
+  const processed = await preprocessForOCR(imageSource);
+  const res = await window.Tesseract.recognize(processed, 'eng', {
+    tessedit_pageseg_mode: '6',
+    preserve_interword_spaces: '1',
+    user_defined_dpi: '300',
     logger: m => { if (m.status === 'recognizing text' && onProgress) onProgress(Math.round(m.progress * 100)); }
   });
-  return (res.data.text || '').trim();
+  return cleanOCRText(res.data.text || '');
 }
 
 export function fileToDataURL(file) {
@@ -52,4 +57,116 @@ function dataURLtoBlob(dataURL) {
   const bin = atob(b64); const arr = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
   return new Blob([arr], { type: mime });
+}
+
+async function preprocessForOCR(imageSource) {
+  const img = await loadImage(imageSource);
+  const maxSide = 2200;
+  const minSide = 1200;
+  const longest = Math.max(img.naturalWidth || img.width, img.naturalHeight || img.height);
+  const upscale = longest < minSide ? minSide / longest : 1;
+  const downscale = longest > maxSide ? maxSide / longest : 1;
+  const scale = Math.min(2, upscale * downscale);
+  const w = Math.max(1, Math.round((img.naturalWidth || img.width) * scale));
+  const h = Math.max(1, Math.round((img.naturalHeight || img.height) * scale));
+
+  const canvas = document.createElement('canvas');
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, w, h);
+  ctx.drawImage(img, 0, 0, w, h);
+
+  const image = ctx.getImageData(0, 0, w, h);
+  const gray = normalizedGrayscale(image.data);
+  const bin = adaptiveThreshold(gray, w, h);
+  for (let i = 0, p = 0; i < bin.length; i++, p += 4) {
+    image.data[p] = image.data[p + 1] = image.data[p + 2] = bin[i];
+    image.data[p + 3] = 255;
+  }
+  ctx.putImageData(image, 0, 0);
+  return canvas.toDataURL('image/png');
+}
+
+function loadImage(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('Could not load image for OCR'));
+    img.src = src;
+  });
+}
+
+function normalizedGrayscale(rgba) {
+  const values = new Uint8Array(rgba.length / 4);
+  const hist = new Uint32Array(256);
+  for (let p = 0, i = 0; p < rgba.length; p += 4, i++) {
+    const g = Math.round(0.299 * rgba[p] + 0.587 * rgba[p + 1] + 0.114 * rgba[p + 2]);
+    values[i] = g;
+    hist[g]++;
+  }
+  const low = percentile(hist, values.length, 0.02);
+  const high = Math.max(low + 12, percentile(hist, values.length, 0.98));
+  for (let i = 0; i < values.length; i++) {
+    values[i] = Math.max(0, Math.min(255, Math.round((values[i] - low) * 255 / (high - low))));
+  }
+  return values;
+}
+
+function percentile(hist, total, p) {
+  const target = total * p;
+  let sum = 0;
+  for (let i = 0; i < hist.length; i++) {
+    sum += hist[i];
+    if (sum >= target) return i;
+  }
+  return 255;
+}
+
+function adaptiveThreshold(gray, w, h) {
+  const integral = new Uint32Array((w + 1) * (h + 1));
+  for (let y = 1; y <= h; y++) {
+    let row = 0;
+    for (let x = 1; x <= w; x++) {
+      row += gray[(y - 1) * w + (x - 1)];
+      integral[y * (w + 1) + x] = integral[(y - 1) * (w + 1) + x] + row;
+    }
+  }
+  const out = new Uint8Array(gray.length);
+  const radius = Math.max(12, Math.round(Math.min(w, h) / 48));
+  const bias = 13;
+  for (let y = 0; y < h; y++) {
+    const y0 = Math.max(0, y - radius), y1 = Math.min(h - 1, y + radius);
+    for (let x = 0; x < w; x++) {
+      const x0 = Math.max(0, x - radius), x1 = Math.min(w - 1, x + radius);
+      const area = (x1 - x0 + 1) * (y1 - y0 + 1);
+      const sum = rectSum(integral, w + 1, x0, y0, x1 + 1, y1 + 1);
+      out[y * w + x] = gray[y * w + x] < (sum / area - bias) ? 0 : 255;
+    }
+  }
+  return out;
+}
+
+function rectSum(integral, stride, x0, y0, x1, y1) {
+  return integral[y1 * stride + x1] - integral[y0 * stride + x1] - integral[y1 * stride + x0] + integral[y0 * stride + x0];
+}
+
+function cleanOCRText(text) {
+  return text
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '')
+    .split(/\r?\n/)
+    .map(line => line.replace(/[ \t]{2,}/g, ' ').trim())
+    .filter(line => line && !isNoiseLine(line))
+    .join('\n')
+    .trim();
+}
+
+function isNoiseLine(line) {
+  const compact = line.replace(/\s/g, '');
+  if (!compact) return true;
+  if (compact.length <= 2) return false;
+  const alnum = (compact.match(/[A-Za-z0-9]/g) || []).length;
+  if (compact.length >= 5 && alnum / compact.length < 0.3) return true;
+  if (/^(.)\1{4,}$/.test(compact)) return true;
+  return false;
 }

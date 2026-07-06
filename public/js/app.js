@@ -4,6 +4,7 @@ import { getUser, setUser, isAdmin, initials } from './state.js';
 import { renderAuth } from './views/auth.js';
 import { renderDashboard } from './views/dashboard.js';
 import { renderExperiments, renderExperiment } from './views/experiments.js';
+import { renderProjects } from './views/projects.js';
 import { renderPlanner } from './views/planner.js';
 import { renderInventory } from './views/inventory.js';
 import { renderAudit } from './views/audit.js';
@@ -22,6 +23,7 @@ const state = { view: 'dashboard', params: {}, search: '' };
 const views = {
   dashboard: () => renderDashboard(content, ctx),
   experiments: () => state.params.id ? renderExperiment(content, ctx, state.params.id) : renderExperiments(content, ctx),
+  projects: () => renderProjects(content, ctx),
   planner: () => renderPlanner(content, ctx),
   inventory: () => renderInventory(content, ctx),
   audit: () => renderAudit(content, ctx),
@@ -92,7 +94,7 @@ document.getElementById('logoutBtn').addEventListener('click', logout);
 const searchBox = document.getElementById('globalSearch');
 searchBox.addEventListener('input', e => {
   state.search = e.target.value.trim().toLowerCase();
-  if (['experiments', 'inventory', 'audit', 'planner', 'users'].includes(state.view) && !state.params.id) views[state.view]();
+  if (['experiments', 'projects', 'inventory', 'audit', 'planner', 'users'].includes(state.view) && !state.params.id) views[state.view]();
 });
 
 // Session expiry mid-use → back to login

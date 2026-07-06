@@ -33,8 +33,8 @@ export const renderSettings = guard(async (root, ctx) => {
           <button class="btn ghost sm" id="logout">Sign out</button>
 
           <h2 class="sec-t" style="margin-top:20px">Voice transcription</h2>
-          <p class="muted" style="font-size:13px;margin-top:0">Engine: <b>${esc(stt.provider)}</b> ${stt.serverStt ? '(self-hosted Whisper)' : '(browser Web Speech API)'}.</p>
-          <div class="hint" style="margin-top:0">Web Speech streams audio to the browser vendor's cloud. For on-prem labs, run the Whisper profile and the app switches automatically.</div>
+          <p class="muted" style="font-size:13px;margin-top:0">Live dictation uses browser Web Speech when available. Server fallback: <b>${esc(stt.provider)}</b>${stt.serverStt ? ' ready' : ' off'}.</p>
+          <div class="hint" style="margin-top:0">Supported browsers show text while you speak. Phones or browsers without live dictation can fall back to server transcription (<code>auto</code>, <code>openai</code>, or <code>whisper</code>), which records first and transcribes on Stop.</div>
         </div>
 
         <div class="card">

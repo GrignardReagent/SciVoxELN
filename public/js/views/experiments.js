@@ -1,9 +1,10 @@
 import { api } from '../api.js';
 import { esc, fmt, fmtShort, toast, modal, closeModal, confirmModal, guard } from '../ui.js';
-import { getUser } from '../state.js';
+import { getUser, isAdmin } from '../state.js';
 import { VoiceController, voiceSupported } from '../voice.js';
 import { Recorder, recorderSupported } from '../recorder.js';
 import { runOCR, fileToDataURL, cameraSupported, startCamera, stopCamera, captureFrame } from '../ocr.js';
+import { openObserverMode } from '../observer.js';
 
 /* ----------------------------- List ----------------------------- */
 export const renderExperiments = guard(async (root, ctx) => {
@@ -19,7 +20,7 @@ export const renderExperiments = guard(async (root, ctx) => {
     </div>
     ${exps.length ? `<div class="grid cardlist">${exps.map(card).join('')}</div>`
       : `<div class="empty"><div class="big">⚗</div>${q ? 'No matches.' : 'No experiments yet.'}</div>`}`;
-  root.querySelector('[data-new]').onclick = () => newExperimentModal(ctx);
+  root.querySelector('[data-new]').onclick = guard(() => newExperimentModal(ctx));
   root.querySelectorAll('[data-exp]').forEach(el => el.onclick = () => ctx.go('experiments', { id: el.dataset.exp }));
 });
 
@@ -27,14 +28,17 @@ function card(e) {
   return `<div class="card hover" data-exp="${e.id}">
     <div class="between"><h3>${esc(e.title)}</h3><span class="status s-${e.status}">${e.status}</span></div>
     <div class="muted" style="font-size:13px">${esc(e.objective || 'No objective set')}</div>
-    <div class="meta"><span class="tag">${esc(e.project || 'General')}</span>
+    <div class="meta"><span class="tag">${esc(e.project_name || e.project || 'General')}</span>
       <span>📝 ${e.entryCount || 0}</span><span>· ${fmtShort(e.created_at)}</span></div></div>`;
 }
 
-function newExperimentModal(ctx) {
+async function newExperimentModal(ctx) {
+  const projects = await api.projects();
   modal(`<h3>New experiment</h3>
     <label class="fld">Title</label><input class="txt" id="mTitle" placeholder="e.g. Buffer stability study"/>
-    <label class="fld">Project</label><input class="txt" id="mProj" placeholder="e.g. Formulation"/>
+    <label class="fld">Project</label><select class="txt" id="mProject">
+      ${projects.map(p => `<option value="${esc(p.id)}">${esc(p.name)} · ${esc(p.org_name || 'Workspace')}</option>`).join('')}
+    </select>
     <label class="fld">Objective</label><textarea class="txt" id="mObj" placeholder="What are you trying to find out?"></textarea>
     <div class="row" style="margin-top:16px;justify-content:flex-end">
       <button class="btn ghost" data-x>Cancel</button><button class="btn" data-ok>Create</button></div>`);
@@ -43,7 +47,7 @@ function newExperimentModal(ctx) {
   m.querySelector('[data-ok]').onclick = guard(async () => {
     const title = m.querySelector('#mTitle').value.trim();
     if (!title) return toast('Title required', true);
-    const exp = await api.createExperiment({ title, project: m.querySelector('#mProj').value.trim(), objective: m.querySelector('#mObj').value.trim() });
+    const exp = await api.createExperiment({ title, project_id: m.querySelector('#mProject').value, objective: m.querySelector('#mObj').value.trim() });
     closeModal(); toast('Experiment created'); ctx.go('experiments', { id: exp.id });
   });
   setTimeout(() => m.querySelector('#mTitle').focus(), 40);
@@ -52,7 +56,7 @@ function newExperimentModal(ctx) {
 /* --------------------------- Single view --------------------------- */
 export const renderExperiment = guard(async (root, ctx, id) => {
   const e = await api.experiment(id);
-  ctx.setHead(e.title, `${e.project || 'General'} · created ${fmtShort(e.created_at)}`);
+  ctx.setHead(e.title, `${e.project_name || e.project || 'General'} · created ${fmtShort(e.created_at)}`);
   const locked = e.status === 'locked';
   root.innerHTML = `
     <button class="btn ghost sm" data-back>← Back to experiments</button>
@@ -63,7 +67,9 @@ export const renderExperiment = guard(async (root, ctx, id) => {
           <div class="muted" style="font-size:13px;margin-top:6px">${esc(e.objective || 'No objective set')}</div>
           <div class="row" style="margin-top:12px">
             <button class="btn sec sm" data-edit>Edit details</button>
-            ${locked ? '<span class="pill">🔒 Locked — read only</span>' : '<button class="btn ok sm" data-lock>🔒 Lock experiment</button>'}
+            <a class="btn ghost sm" href="/api/experiments/${esc(e.id)}/export?format=html" download>Export HTML</a>
+            <a class="btn ghost sm" href="/api/experiments/${esc(e.id)}/export" download>Export JSON</a>
+            ${locked ? '<span class="pill">🔒 Locked — read only</span>' : '<button class="btn sec sm" data-observe>👁 Observe run</button><button class="btn ok sm" data-lock>🔒 Lock experiment</button>'}
           </div>
         </div>
         ${locked ? '' : '<div id="composerMount"></div>'}
@@ -84,21 +90,130 @@ export const renderExperiment = guard(async (root, ctx, id) => {
       </div>
       <div class="card">
         <h2 class="sec-t">Integrity</h2>
-        <p class="muted" style="font-size:12px;margin-top:0">Each entry carries a content fingerprint. Signing locks it; any later change breaks the fingerprint — the basis of an audit-ready record.</p>
+        <p class="muted" style="font-size:12px;margin-top:0">Each entry carries a SHA-256 fingerprint. Signing requires signer confirmation and stores signature meaning for audit-ready records.</p>
         <div class="hint" style="margin-top:0">Signed: <b>${e.entries.filter(x => x.signed_by).length}/${e.entries.length}</b></div>
         <div class="hint">Status: <b>${e.status}</b></div>
       </div>
+      <div class="card">
+        <div class="between"><h2 class="sec-t" style="margin:0">📚 References</h2><button class="btn sm" id="refAdd">+ Add</button></div>
+        <p class="muted" style="font-size:11px;margin:6px 0 0">Papers linked to this experiment — add by DOI, import BibTeX/RIS (a Zotero or Mendeley export), or pull from a Zotero library.</p>
+        <div id="refList" style="margin-top:8px"></div>
+      </div>
     </div>`;
   root.querySelector('[data-back]').onclick = () => ctx.go('experiments');
-  root.querySelector('[data-edit]').onclick = () => editExperimentModal(ctx, e);
+  root.querySelector('[data-edit]').onclick = guard(() => editExperimentModal(ctx, e));
+  const observeBtn = root.querySelector('[data-observe]');
+  if (observeBtn) observeBtn.onclick = () => openObserverMode(e, ctx);
   const lockBtn = root.querySelector('[data-lock]');
   if (lockBtn) lockBtn.onclick = () => confirmModal('Lock experiment?',
     'Locking makes this experiment read-only. No new entries can be added.',
     guard(async () => { await api.lockExperiment(e.id); toast('Experiment locked'); ctx.go('experiments', { id: e.id }); }));
   wireSignButtons(root, ctx, e.id);
+  wireDeleteButtons(root, ctx, e.id);
   if (!locked) mountComposer(root.querySelector('#composerMount'), ctx, e.id);
   mountAssistant(root, e);
+  mountReferences(root, e);
 });
+
+/* --------------------------- References --------------------------- */
+async function mountReferences(root, exp) {
+  const listEl = root.querySelector('#refList');
+  const addBtn = root.querySelector('#refAdd');
+  if (!listEl) return;
+
+  const load = async () => {
+    listEl.innerHTML = '<div class="muted" style="font-size:12px">Loading…</div>';
+    let refs = [];
+    try { refs = await api.references(exp.id); }
+    catch { listEl.innerHTML = '<div class="muted" style="font-size:12px">Failed to load references.</div>'; return; }
+    listEl.innerHTML = refs.length
+      ? refs.map(refItem).join('')
+      : '<div class="muted" style="font-size:12px;padding:6px 0">No references yet.</div>';
+    listEl.querySelectorAll('[data-delref]').forEach(b => b.onclick = () => confirmModal('Remove reference?',
+      'This removes the paper from this experiment.',
+      guard(async () => { await api.deleteReference(b.dataset.delref); toast('Reference removed'); load(); }), 'Remove'));
+  };
+
+  addBtn.onclick = () => addReferencesModal(exp, load);
+  await load();
+}
+
+function refItem(rf) {
+  const cite = [rf.authors, rf.year ? `(${rf.year})` : ''].filter(Boolean).join(' ');
+  const link = rf.url || (rf.doi ? `https://doi.org/${rf.doi}` : '');
+  const titleHtml = link ? `<a href="${esc(link)}" target="_blank" rel="noopener">${esc(rf.title)}</a>` : esc(rf.title);
+  return `<div class="ref-item">
+    <button class="ref-del" data-delref="${rf.id}" title="Remove">✕</button>
+    <div class="ref-title">${titleHtml}</div>
+    <div class="ref-meta">${esc(cite) || '—'}${rf.doi ? ' · ' + esc(rf.doi) : ''} <span class="ref-src">${esc(rf.source)}</span></div>
+  </div>`;
+}
+
+function addReferencesModal(exp, onDone) {
+  let tab = 'doi';
+  const body = t => {
+    if (t === 'doi') return `<label class="fld">DOI</label><input class="txt" id="rDoi" placeholder="10.1038/s41586-020-2649-2"/><p class="muted" style="font-size:11px;margin-top:6px">Metadata is fetched automatically from CrossRef.</p>`;
+    if (t === 'import') return `<label class="fld">Paste BibTeX or RIS</label><textarea class="txt" id="rText" style="min-height:150px" placeholder="In Zotero or Mendeley, export your items as BibTeX or RIS and paste them here…"></textarea>`;
+    if (t === 'zotero') return `<label class="fld">Zotero numeric user ID</label><input class="txt" id="rZid" placeholder="e.g. 123456"/>
+      <label class="fld">API key (only for private libraries)</label><input class="txt" id="rZkey" placeholder="optional"/>
+      <label class="fld">Collection key (optional)</label><input class="txt" id="rZcol" placeholder="optional — import one collection"/>
+      <p class="muted" style="font-size:11px;margin-top:6px">Find your user ID and create an API key at zotero.org → Settings → Feeds/API.</p>`;
+    return `<label class="fld">Title</label><input class="txt" id="rTitle"/>
+      <label class="fld">Authors</label><input class="txt" id="rAuth" placeholder="Smith J, Doe A"/>
+      <div class="row"><div style="flex:1"><label class="fld">Year</label><input class="txt" id="rYear"/></div>
+      <div style="flex:2"><label class="fld">DOI or URL</label><input class="txt" id="rUrl"/></div></div>`;
+  };
+  const okLabel = () => tab === 'manual' ? 'Add' : tab === 'doi' ? 'Look up & add' : 'Import';
+  const render = () => {
+    modal(`<h3>Add references</h3>
+      <div class="auth-tabs" style="margin-top:8px;flex-wrap:wrap">
+        <button class="auth-tab ${tab === 'doi' ? 'on' : ''}" data-t="doi">DOI</button>
+        <button class="auth-tab ${tab === 'import' ? 'on' : ''}" data-t="import">BibTeX / RIS</button>
+        <button class="auth-tab ${tab === 'zotero' ? 'on' : ''}" data-t="zotero">Zotero</button>
+        <button class="auth-tab ${tab === 'manual' ? 'on' : ''}" data-t="manual">Manual</button>
+      </div>
+      <div id="refBody" style="margin-top:6px">${body(tab)}</div>
+      <div class="auth-err" id="refErr"></div>
+      <div class="row" style="margin-top:14px;justify-content:flex-end">
+        <button class="btn ghost" data-x>Close</button>
+        <button class="btn" data-ok>${okLabel()}</button></div>`);
+    const m = document.getElementById('modal');
+    m.querySelectorAll('[data-t]').forEach(b => b.onclick = () => { tab = b.dataset.t; render(); });
+    m.querySelector('[data-x]').onclick = closeModal;
+    m.querySelector('[data-ok]').onclick = submit;
+  };
+  const submit = guard(async () => {
+    const m = document.getElementById('modal');
+    const err = m.querySelector('#refErr'); err.textContent = '';
+    const ok = m.querySelector('[data-ok]'); const label = ok.textContent;
+    ok.disabled = true; ok.textContent = 'Working…';
+    try {
+      if (tab === 'doi') {
+        const doi = m.querySelector('#rDoi').value.trim(); if (!doi) throw new Error('Enter a DOI');
+        await api.addReferenceDoi(exp.id, doi); toast('Reference added');
+      } else if (tab === 'import') {
+        const res = await api.importReferences(exp.id, m.querySelector('#rText').value);
+        toast(`Imported ${res.added}${res.skipped ? `, skipped ${res.skipped}` : ''}`);
+      } else if (tab === 'zotero') {
+        const res = await api.importZotero(exp.id, {
+          userId: m.querySelector('#rZid').value.trim(),
+          apiKey: m.querySelector('#rZkey').value.trim(),
+          collectionKey: m.querySelector('#rZcol').value.trim()
+        });
+        toast(`Imported ${res.added} from Zotero`);
+      } else {
+        const url = m.querySelector('#rUrl').value.trim();
+        const doi = /^10\.\S+\//.test(url) ? url : '';
+        const title = m.querySelector('#rTitle').value.trim();
+        if (!title) throw new Error('Title is required');
+        await api.addReference(exp.id, { title, authors: m.querySelector('#rAuth').value.trim(), year: m.querySelector('#rYear').value.trim(), doi, url: doi ? '' : url });
+        toast('Reference added');
+      }
+      closeModal(); onDone();
+    } catch (ex) { err.textContent = ex.message || 'Failed'; ok.disabled = false; ok.textContent = label; }
+  });
+  render();
+}
 
 /* --------------------------- AI assistant --------------------------- */
 const aiHistory = new Map(); // experimentId -> [{role, content}]
@@ -154,33 +269,75 @@ async function mountAssistant(root, exp) {
 
 function entryHTML(en, locked) {
   const type = en.signed_by ? 'sig' : en.type;
-  const badge = { voice: '<span class="badge b-voice">🎙 Voice</span>', ocr: '<span class="badge b-ocr">📷 OCR</span>', note: '<span class="badge b-note">Note</span>' }[en.type] || '';
+  const badge = {
+    voice: '<span class="badge b-voice">🎙 Voice</span>',
+    ocr: '<span class="badge b-ocr">📷 OCR</span>',
+    observe: '<span class="badge b-observe">👁 Observe</span>',
+    note: '<span class="badge b-note">Note</span>'
+  }[en.type] || '';
   const canSign = !en.signed_by && !locked && getUser();
+  const canDelete = isAdmin();
   return `<div class="entry ${type}">
     <div class="eh">${badge}
       <span>🕒 ${fmt(en.created_at)}</span>
       <span>· ${esc(en.author || 'Unknown')}${en.role ? ' (' + esc(en.role) + ')' : ''}</span>
-      ${en.signed_by ? `<span class="badge b-sig">🔒 Signed by ${esc(en.signed_by)}</span>` : ''}</div>
+      ${en.signed_by ? `<span class="badge b-sig">🔒 ${esc(en.signature_meaning || 'signed')} by ${esc(en.signed_by)}</span>` : ''}</div>
     <div class="body">${esc(en.text)}</div>
     ${en.image_url ? `<img class="thumb" src="${esc(en.image_url)}" alt="scan"/>` : ''}
     <div class="hashline">fingerprint ${en.hash}${en.signed_by ? ` · signed ${fmt(en.signed_at)} · sig ${en.sig}` : ''}</div>
-    ${canSign ? `<button class="btn ok sm" style="margin-top:8px" data-sign="${en.id}">🔒 Sign &amp; lock entry</button>` : ''}
+    <div class="row" style="margin-top:8px">
+      ${canSign ? `<button class="btn ok sm" data-sign="${en.id}">🔒 Sign &amp; lock entry</button>` : ''}
+      ${canDelete ? `<button class="btn danger sm" data-delete-entry="${en.id}">Delete entry</button>` : ''}
+    </div>
   </div>`;
 }
 
 function wireSignButtons(root, ctx, expId) {
   root.querySelectorAll('[data-sign]').forEach(b => b.onclick = () => {
     const u = getUser();
-    confirmModal('Sign &amp; lock this entry?',
-      `By signing you attest this record is accurate and complete. It will be locked as ${esc(u.name || u.email)}.`,
-      guard(async () => { await api.signEntry(b.dataset.sign); toast('Entry signed & locked'); ctx.go('experiments', { id: expId }); }), 'Sign');
+    modal(`<h3>Sign &amp; lock entry</h3>
+      <p class="muted" style="font-size:12px">By signing, you attest this record is accurate and complete. It will be locked as <b>${esc(u.name || u.email)}</b>.</p>
+      <label class="fld">Signature meaning</label>
+      <select class="txt" id="sigMeaning">
+        <option value="author">author</option>
+        <option value="reviewer">reviewer</option>
+        <option value="approval">approval</option>
+      </select>
+      <label class="fld">Password confirmation</label>
+      <input class="txt" id="sigPassword" type="password" autocomplete="current-password" placeholder="Enter your password"/>
+      <div class="auth-err" id="sigErr"></div>
+      <div class="row" style="margin-top:16px;justify-content:flex-end">
+        <button class="btn ghost" data-x>Cancel</button><button class="btn ok" data-ok>Sign</button></div>`);
+    const m = document.getElementById('modal');
+    m.querySelector('[data-x]').onclick = closeModal;
+    m.querySelector('[data-ok]').onclick = guard(async () => {
+      const err = m.querySelector('#sigErr'); err.textContent = '';
+      try {
+        await api.signEntry(b.dataset.sign, {
+          meaning: m.querySelector('#sigMeaning').value,
+          password: m.querySelector('#sigPassword').value,
+          attestation: 'I am signing this record'
+        });
+        closeModal(); toast('Entry signed & locked'); ctx.go('experiments', { id: expId });
+      } catch (ex) { err.textContent = ex.message || 'Signing failed'; }
+    });
+    setTimeout(() => m.querySelector('#sigPassword').focus(), 40);
   });
 }
 
-function editExperimentModal(ctx, e) {
+function wireDeleteButtons(root, ctx, expId) {
+  root.querySelectorAll('[data-delete-entry]').forEach(b => b.onclick = () => confirmModal('Delete notebook entry?',
+    'Only admins can do this. The entry will be removed from the experiment, and the deletion will be recorded in the audit trail.',
+    guard(async () => { await api.deleteEntry(b.dataset.deleteEntry); toast('Entry deleted'); ctx.go('experiments', { id: expId }); }), 'Delete'));
+}
+
+async function editExperimentModal(ctx, e) {
+  const projects = await api.projects();
   modal(`<h3>Edit experiment</h3>
     <label class="fld">Title</label><input class="txt" id="mTitle" value="${esc(e.title)}"/>
-    <label class="fld">Project</label><input class="txt" id="mProj" value="${esc(e.project)}"/>
+    <label class="fld">Project</label><select class="txt" id="mProject">
+      ${projects.map(p => `<option value="${esc(p.id)}" ${e.project_id === p.id ? 'selected' : ''}>${esc(p.name)} · ${esc(p.org_name || 'Workspace')}</option>`).join('')}
+    </select>
     <label class="fld">Objective</label><textarea class="txt" id="mObj">${esc(e.objective)}</textarea>
     <label class="fld">Status</label><select class="txt" id="mStat">
       ${['planned', 'active', 'locked'].map(s => `<option ${e.status === s ? 'selected' : ''}>${s}</option>`).join('')}</select>
@@ -191,7 +348,7 @@ function editExperimentModal(ctx, e) {
   m.querySelector('[data-ok]').onclick = guard(async () => {
     await api.updateExperiment(e.id, {
       title: m.querySelector('#mTitle').value.trim() || e.title,
-      project: m.querySelector('#mProj').value.trim(),
+      project_id: m.querySelector('#mProject').value,
       objective: m.querySelector('#mObj').value.trim(),
       status: m.querySelector('#mStat').value
     });
@@ -202,9 +359,14 @@ function editExperimentModal(ctx, e) {
 /* --------------------------- Composer --------------------------- */
 async function mountComposer(mount, ctx, expId) {
   let capturedType = null, uploadedUrl = null;
-  let serverStt = false;
-  try { serverStt = !!(await api.sttHealth()).serverStt; } catch {}
-  const useRecorder = serverStt && recorderSupported;
+  let stt = { provider: 'webspeech', serverStt: false };
+  try { stt = await api.sttHealth(); } catch {}
+  const serverStt = !!stt.serverStt;
+  const useLiveSpeech = voiceSupported;
+  const useRecorder = !useLiveSpeech && serverStt && recorderSupported;
+  const voiceMode = useLiveSpeech ? 'Live dictation'
+    : useRecorder ? `Server transcription · ${esc(stt.provider)}`
+      : 'Voice unavailable';
 
   mount.innerHTML = `
     <div class="composer">
@@ -217,7 +379,7 @@ async function mountComposer(mount, ctx, expId) {
         <button class="btn sm sec" id="ocrCam" type="button">📸 Camera</button>
         <button class="btn sm sec" id="ocrBtn" type="button">🖼 Upload scan</button>
         <input type="file" id="ocrFile" accept="image/*" capture="environment" style="display:none"/>
-        <span class="pill" style="margin-left:auto">${useRecorder ? '🔒 Whisper' : 'Web Speech'}</span>
+        <span class="pill" style="margin-left:auto">${voiceMode}</span>
       </div>
       <textarea class="txt" id="composerText" placeholder="Type, dictate (Start voice), photograph a note (Camera), or upload a scan."></textarea>
       <div id="ocrPreview"></div>
@@ -243,10 +405,11 @@ async function mountComposer(mount, ctx, expId) {
   function showPaused() { micPause.textContent = '▶ Resume'; reclabel.classList.add('on', 'paused'); recword.textContent = 'Paused'; }
   function showIdle() { micStart.style.display = ''; micPause.style.display = 'none'; micStop.style.display = 'none'; micStart.classList.remove('rec'); reclabel.classList.remove('on', 'paused'); }
 
-  if (useRecorder) wireRecorder(); else wireWebSpeech();
+  if (useLiveSpeech) wireWebSpeech();
+  else if (useRecorder) wireRecorder();
+  else wireVoiceUnavailable();
 
   function wireWebSpeech() {
-    if (!voiceSupported) { micStart.disabled = true; micStart.textContent = '🎙 Voice not supported'; micStart.title = 'Use Chrome/Edge or enable server Whisper'; return; }
     const voice = new VoiceController({
       onText: t => { text.value = t; upd(); },
       onState: s => {
@@ -261,6 +424,17 @@ async function mountComposer(mount, ctx, expId) {
     micPause.onclick = () => (voice.state === 'recording' ? voice.pause() : voice.resume());
     micStop.onclick = () => voice.stop();
     mount._voice = voice;
+  }
+  function wireVoiceUnavailable() {
+    micStart.disabled = true;
+    micStart.textContent = '🎙 Voice unavailable';
+    if (serverStt && !recorderSupported) {
+      micStart.title = 'This browser cannot access microphone recording here. Use HTTPS or localhost and allow microphone access.';
+      stateEl.textContent = 'Voice needs a secure browser context with microphone recording.';
+    } else {
+      micStart.title = 'This browser does not support live dictation. Set STT_PROVIDER=auto with OPENAI_API_KEY, or STT_PROVIDER=whisper, to enable server recording.';
+      stateEl.textContent = 'Voice on this device needs server transcription.';
+    }
   }
   function wireRecorder() {
     const rec = new Recorder(); mount._rec = rec;

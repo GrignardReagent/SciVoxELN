@@ -3,6 +3,10 @@
 Guidance for AI assistants (and humans) working in this repo. Read this before
 making changes.
 
+> **Progress log:** read `PROGRESS.md` at the start of a session and update it at
+> the end (dated Session-log entry; move items between Done / In progress /
+> Backlog). It's the source of truth for what's done vs. outstanding.
+
 ## What this is
 
 A voice- and vision-powered **Electronic Lab Notebook**. Full-stack web app,
@@ -38,9 +42,15 @@ compliance/on-prem angle (clean rooms, classified data, 21 CFR Part 11 / GxP).
 2. **Every write goes through the audit log.** After a mutating route succeeds,
    call `Audit.log(user, role, ACTION, detail)`. Actions are SCREAMING_SNAKE
    (e.g. `SIGN_ENTRY`, `CONSUME_INVENTORY`).
-3. **Identity comes from middleware.** `src/index.js` reads `x-user-name` /
-   `x-user-role` headers into `req.user`. Auth is stubbed; this is where real
-   SSO/JWT/RBAC plugs in. The frontend sends these via `public/js/api.js`.
+3. **Identity comes from the session, server-side.** `src/auth.js` provides
+   `authenticate` (reads the signed HttpOnly session cookie → `req.user`),
+   `requireAuth`, and `requireRole('admin')` (hierarchy: viewer < scientist/user
+   < reviewer < admin). All
+   `/api` data routes are mounted behind `requireAuth` in `src/index.js`; never
+   trust client headers for identity. Passwords are scrypt (`node:crypto`);
+   OAuth (Google/GitHub/WeChat) lives in `src/oauth.js`, env-gated. First user
+   and `ADMIN_EMAILS` become admin. Users, server-side sessions, orgs/projects,
+   memberships and token repos are in `src/db.js`.
 4. **Immutability is enforced server-side.** Locked experiments reject new
    entries (409). Signed entries can't be re-signed. Don't move these checks to
    the client.
@@ -53,23 +63,60 @@ compliance/on-prem angle (clean rooms, classified data, 21 CFR Part 11 / GxP).
    `params` (e.g. `ctx.go('experiments', { id })`); planner keeps its own
    `openId` module-local state.
 
+## AI assistant
+
+- `src/routes/ai.js` proxies OpenAI Chat Completions. **The API key
+  (`OPENAI_API_KEY`) is server-side only** — in gitignored `.env`, never sent to
+  the browser or committed. `OPENAI_MODEL` defaults to `gpt-5.5`;
+  `OPENAI_BASE_URL` allows Azure/compatible proxies (and testing against a mock).
+- The server injects the current experiment's context as the system message; the
+  client only sends user/assistant turns. Frontend panel is `mountAssistant()` in
+  `public/js/views/experiments.js` (right column), calling `api.aiChat()`.
+- `.env` is loaded via `node --env-file-if-exists=.env` (package.json scripts);
+  Docker passes `OPENAI_*` through compose. No dotenv dependency.
+
 ## Voice & OCR
 
 - Voice = **Web Speech API** in `public/js/voice.js` (`VoiceController`), with
   Start/Pause/Resume/Stop. It streams audio to the browser vendor's cloud —
   **not on-device**. This is called out in the README and Settings.
-- Server STT is **Whisper-ready but stubbed**: `src/routes/stt.js`. Enable with
-  `STT_PROVIDER=whisper` (+ implement `transcribe()` or set `STT_URL`). Keep the
-  frontend seam intact so it can switch automatically.
-- OCR = **Tesseract.js**, entirely in-browser (`public/js/ocr.js`). The scanned
-  image is uploaded to `/api/uploads` and stored with the entry.
+- Server STT supports `auto|webspeech|openai|whisper`. `auto` uses OpenAI
+  transcription when `OPENAI_API_KEY` is set, otherwise browser Web Speech.
+  `openai` and `whisper` use `public/js/recorder.js` (MediaRecorder), which is
+  the mobile-safe path; `webspeech` uses `voice.js` and is weak on mobile Safari.
+  `STT_OPENAI_MODEL` defaults to `gpt-4o-mini-transcribe`. `whisper` forwards
+  audio to the on-prem `onerahmet/openai-whisper-asr-webservice` `/asr`
+  endpoint.
+- OCR = **Tesseract.js**, entirely in-browser (`public/js/ocr.js`). Image comes
+  from a file upload **or the live camera** (`getUserMedia`, rear camera via
+  `facingMode:'environment'`); it is preprocessed on canvas (contrast normalize
+  + adaptive threshold) before OCR, then the original image is uploaded to
+  `/api/uploads` and stored.
 - Both need Chrome/Edge and a secure context (`https://` or `localhost`).
+- **Theming** in `public/js/theme.js`: light/dark presets with a user-editable
+  5-colour palette; applies CSS variables and caches them so an inline `<head>`
+  script in `index.html` can paint without flash. Toggle in the top bar; full
+  customiser in Settings → Appearance.
+- **Mobile**: sidebar becomes a slide-in drawer under 900px (hamburger in
+  `.top`, scrim overlay), wired in `public/js/app.js`.
 
 ## Data & config
 
 - State under `DATA_DIR` (`./data` locally, `/app/data` in Docker):
   `scivox.db` + `uploads/`. Back up = copy that dir / the `scivox-data` volume.
-- Env: `PORT`, `DATA_DIR`, `SEED` (`true`/`false`), `STT_PROVIDER`, `STT_URL`.
+- Env: `PORT`, `HOST`, `DATA_DIR`, `SEED` (`true`/`false`), `BASE_URL`,
+  `COOKIE_SECURE`, `TRUST_PROXY`, `FORCE_HTTPS`, `ADMIN_EMAILS`,
+  `STT_PROVIDER`, `STT_URL`.
+- No-domain prototype deployment uses the Docker Compose `prototype` profile
+  with Cloudflare Quick Tunnel: set `COOKIE_SECURE=true`, `TRUST_PROXY=1`,
+  leave `BASE_URL` blank, run `docker compose --profile prototype up -d --build`,
+  then copy the `https://*.trycloudflare.com` URL from
+  `docker compose logs -f prototype-tunnel`.
+- Permanent-domain deployment uses the Docker Compose `public` profile with
+  Caddy (`deploy/Caddyfile`): set `DOMAIN`, `BASE_URL=https://DOMAIN`,
+  `COOKIE_SECURE=true`, `TRUST_PROXY=1`, `FORCE_HTTPS=true`, and a real
+  `SESSION_SECRET`; then run `docker compose --profile public up -d --build`.
+  OAuth callbacks must match `{BASE_URL}/api/auth/oauth/{provider}/callback`.
 - `src/seed.js` seeds demo data only when the DB is empty.
 - `db.js` tries WAL journaling and **falls back to DELETE** journal if the
   filesystem doesn't support shared memory (network/on-prem shares). Don't force
@@ -103,16 +150,19 @@ plan start → audit CSV. Frontend voice/OCR need a real browser.
 ## Conventions
 
 - IDs: `crypto.randomUUID()`. Timestamps: ISO strings (`new Date().toISOString()`).
-- Entry integrity = djb2 `fingerprint()` in `db.js`. **Demo-grade** — swap for
-  cryptographic hashing/signing before any real 21 CFR Part 11 deployment.
+- Entry/export/audit integrity uses SHA-256 `fingerprint()` in `db.js`.
+  Part 11/GxP readiness still needs customer validation, SOPs and training.
 - Statuses: experiments `planned|active|locked`; plans `draft|ready|started|archived`.
 - Keep the app framework-free and dependency-light unless there's a strong reason.
 
 ## Known follow-ups (not yet built)
 
-- Real authentication (SSO/JWT/RBAC) + server-derived identity.
-- Cryptographic signatures/hashing.
+- Enterprise authentication hardening (SSO/JWT/RBAC beyond the current
+  password/OAuth/session-revocation auth).
+- SMTP delivery for password reset / email verification tokens.
+- PDF/ZIP signed export bundle (MVP has hashed JSON/HTML evidence exports).
 - LIMS/instrument connectors and scheduled on-prem→cloud sync (from the pitch).
-- Optional Whisper container wired into docker-compose.
+- Per-project inventory scoping (inventory is currently instance-wide).
+- GPU Whisper option / model tuning (base model wired; see docker-compose.yml).
 - `SciVox-ELN.html` at the repo root is the original standalone single-file
   prototype — kept for reference, gitignored, not part of the app.

@@ -13,7 +13,7 @@ export const renderUsers = guard(async (root, ctx) => {
   root.innerHTML = `
     <div class="between" style="margin-bottom:14px">
       <span class="pill">${users.length} user${users.length !== 1 ? 's' : ''}</span>
-      <span class="muted" style="font-size:12px">Roles: <b>admin</b> &gt; <b>user</b></span>
+      <span class="muted" style="font-size:12px">Roles: <b>admin</b> &gt; <b>reviewer</b> &gt; <b>scientist</b> &gt; <b>viewer</b></span>
     </div>
     <div class="card" style="padding:0;overflow:auto">
       <table class="tbl">
@@ -21,7 +21,7 @@ export const renderUsers = guard(async (root, ctx) => {
         <tbody>${users.map(u => rowHTML(u, me)).join('')}</tbody>
       </table>
     </div>
-    <div class="hint">Admins can manage everything including users; regular users can use the notebook, planner and inventory. The last remaining admin cannot be demoted.</div>`;
+    <div class="hint">Account roles set broad privileges; project memberships decide which notebooks a user can see or edit. The last remaining admin cannot be demoted.</div>`;
 
   root.querySelectorAll('select[data-role]').forEach(sel => sel.onchange = guard(async () => {
     const id = sel.dataset.role, role = sel.value;
@@ -41,7 +41,9 @@ function rowHTML(u, me) {
     <td class="muted">${fmtShort(u.created_at)}</td>
     <td>
       <select class="txt" data-role="${u.id}" style="width:120px;padding:6px 8px">
-        <option value="user" ${u.role === 'user' ? 'selected' : ''}>user</option>
+        <option value="viewer" ${u.role === 'viewer' ? 'selected' : ''}>viewer</option>
+        <option value="scientist" ${u.role === 'scientist' || u.role === 'user' ? 'selected' : ''}>scientist</option>
+        <option value="reviewer" ${u.role === 'reviewer' ? 'selected' : ''}>reviewer</option>
         <option value="admin" ${u.role === 'admin' ? 'selected' : ''}>admin</option>
       </select>
     </td>

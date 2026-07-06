@@ -5,6 +5,7 @@ FROM node:22-slim
 ENV NODE_ENV=production \
     NODE_NO_WARNINGS=1 \
     PORT=3000 \
+    HOST=0.0.0.0 \
     DATA_DIR=/app/data
 
 WORKDIR /app

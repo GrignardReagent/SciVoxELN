@@ -1,10 +1,8 @@
 /**
- * Microphone recorder for server-side STT (Whisper).
+ * Microphone recorder for server-side STT.
  *
- * When the server reports serverStt=true, the composer records audio with the
- * MediaRecorder API instead of using the browser Web Speech API. Whisper is a
- * batch engine, so there is no live interim text — the audio is captured with
- * Start / Pause / Resume, then transcribed on Stop.
+ * Fallback path for browsers that cannot use live Web Speech dictation. The
+ * composer records audio with MediaRecorder and sends it to server STT on Stop.
  */
 export const recorderSupported = !!(navigator.mediaDevices && window.MediaRecorder);
 
@@ -13,15 +11,17 @@ export class Recorder {
     this.mr = null;
     this.stream = null;
     this.chunks = [];
-    this.mimeType = 'audio/webm';
+    this.mimeType = pickMimeType();
     this.state = 'idle'; // idle | recording | paused
   }
 
   async start() {
     this.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     this.chunks = [];
-    this.mr = new MediaRecorder(this.stream);
-    this.mimeType = this.mr.mimeType || 'audio/webm';
+    const opts = this.mimeType ? { mimeType: this.mimeType } : undefined;
+    try { this.mr = new MediaRecorder(this.stream, opts); }
+    catch { this.mr = new MediaRecorder(this.stream); }
+    this.mimeType = this.mr.mimeType || this.mimeType || 'audio/webm';
     this.mr.ondataavailable = e => { if (e.data && e.data.size) this.chunks.push(e.data); };
     this.mr.start();
     this.state = 'recording';
@@ -55,4 +55,15 @@ export class Recorder {
     this.stream = null;
     this.mr = null;
   }
+}
+
+function pickMimeType() {
+  if (!window.MediaRecorder || !MediaRecorder.isTypeSupported) return '';
+  return [
+    'audio/webm;codecs=opus',
+    'audio/webm',
+    'audio/mp4;codecs=mp4a.40.2',
+    'audio/mp4',
+    'audio/mpeg'
+  ].find(t => MediaRecorder.isTypeSupported(t)) || '';
 }

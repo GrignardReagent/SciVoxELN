@@ -1,0 +1,11 @@
+{$DOMAIN} {
+	encode zstd gzip
+
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+		Permissions-Policy "camera=(self), microphone=(self)"
+	}
+
+	reverse_proxy scivox:3000
+}

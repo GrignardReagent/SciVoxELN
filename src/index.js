@@ -16,6 +16,8 @@ import { seedIfEmpty } from './seed.js';
 import { authenticate, requireAuth } from './auth.js';
 import auth from './routes/auth.js';
 import users from './routes/users.js';
+import orgs from './routes/orgs.js';
+import projects from './routes/projects.js';
 import experiments from './routes/experiments.js';
 import entries from './routes/entries.js';
 import plans from './routes/plans.js';
@@ -24,19 +26,48 @@ import audit from './routes/audit.js';
 import stt from './routes/stt.js';
 import uploads from './routes/uploads.js';
 import ai from './routes/ai.js';
+import references from './routes/references.js';
+import search from './routes/search.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3000;
+const HOST = process.env.HOST || '0.0.0.0';
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '..', 'data');
 const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+
+function trustProxyValue(value) {
+  if (!value || value === 'false' || value === '0') return false;
+  if (value === 'true') return 1;
+  if (/^\d+$/.test(value)) return Number(value);
+  return value;
+}
 
 // Initialise DB
 migrate();
 if (process.env.SEED !== 'false') seedIfEmpty();
 
-const app = express();
+export const app = express();
 app.disable('x-powered-by');
+const trustProxy = trustProxyValue(process.env.TRUST_PROXY);
+if (trustProxy) app.set('trust proxy', trustProxy);
+
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Permissions-Policy', 'camera=(self), microphone=(self)');
+  next();
+});
+
+if (process.env.FORCE_HTTPS === 'true') {
+  app.use((req, res, next) => {
+    const host = req.headers.host || '';
+    const isLocal = /^localhost(?::|$)|^127\.0\.0\.1(?::|$)|^\[::1\](?::|$)/.test(host);
+    if (!host || req.secure || isLocal) return next();
+    res.redirect(308, `https://${host}${req.originalUrl}`);
+  });
+}
+
 app.use(express.json({ limit: '2mb' }));
 app.use(authenticate); // populates req.user from the session cookie (or null)
 
@@ -46,6 +77,8 @@ app.use('/api/auth', auth);
 
 // Protected API (login required)
 app.use('/api/experiments', requireAuth, experiments);
+app.use('/api/orgs', requireAuth, orgs);
+app.use('/api/projects', requireAuth, projects);
 app.use('/api/entries', requireAuth, entries);
 app.use('/api/plans', requireAuth, plans);
 app.use('/api/inventory', requireAuth, inventory);
@@ -53,6 +86,8 @@ app.use('/api/audit', requireAuth, audit);
 app.use('/api/stt', requireAuth, stt);
 app.use('/api/uploads', requireAuth, uploads);
 app.use('/api/ai', requireAuth, ai);
+app.use('/api/references', requireAuth, references);
+app.use('/api/search', requireAuth, search);
 app.use('/api/users', requireAuth, users); // users routes further require the admin role
 
 // Uploaded scans (login required to view)
@@ -70,6 +105,11 @@ app.use((err, _req, res, _next) => {
   res.status(err.status || 500).json({ error: err.message || 'Internal error' });
 });
 
-app.listen(PORT, () => {
-  console.log(`SciVox ELN running on http://localhost:${PORT}  (data: ${DATA_DIR})`);
-});
+export function start() {
+  return app.listen(PORT, HOST, () => {
+    const shownHost = HOST === '0.0.0.0' ? 'localhost' : HOST;
+    console.log(`SciVox ELN running on http://${shownHost}:${PORT}  (bound: ${HOST}, data: ${DATA_DIR})`);
+  });
+}
+
+if (process.env.SCIVOX_NO_LISTEN !== 'true') start();

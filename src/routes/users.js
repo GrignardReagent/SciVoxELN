@@ -11,7 +11,7 @@ r.get('/', (_req, res) => res.json(Users.list()));
 
 r.patch('/:id/role', (req, res) => {
   const role = req.body?.role;
-  if (!ROLES[role]) return res.status(400).json({ error: 'Role must be user or admin' });
+  if (!ROLES[role]) return res.status(400).json({ error: 'Role must be viewer, scientist, reviewer or admin' });
   const target = Users.getById(req.params.id);
   if (!target) return res.status(404).json({ error: 'User not found' });
   // Don't allow removing the last admin.

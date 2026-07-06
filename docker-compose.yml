@@ -3,17 +3,69 @@ services:
     build: .
     container_name: scivox-eln
     ports:
-      - "3000:3000"
+      # Local access. Use the "prototype" profile for a temporary HTTPS tunnel.
+      - "${APP_BIND:-127.0.0.1}:${APP_PORT:-3000}:3000"
     environment:
       PORT: 3000
+      HOST: 0.0.0.0
       DATA_DIR: /app/data
       SEED: "true"                              # set "false" to skip demo seeding on an empty DB
-      STT_PROVIDER: ${STT_PROVIDER:-webspeech}  # webspeech | whisper
+      BASE_URL: ${BASE_URL:-}                    # blank = infer current host; useful for prototype tunnels
+      SESSION_SECRET: ${SESSION_SECRET:-}       # set in production; otherwise generated in /app/data
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}    # true when served at HTTPS
+      TRUST_PROXY: ${TRUST_PROXY:-false}        # 1/true when behind Caddy/Nginx/Cloudflare
+      FORCE_HTTPS: ${FORCE_HTTPS:-false}        # redirect HTTP to HTTPS when proxy headers are present
+      ADMIN_EMAILS: ${ADMIN_EMAILS:-}            # comma-separated emails to make admin on sign-up
+      PASSWORD_RESET_EXPOSE_TOKEN: ${PASSWORD_RESET_EXPOSE_TOKEN:-false}
+      EMAIL_VERIFICATION_EXPOSE_TOKEN: ${EMAIL_VERIFICATION_EXPOSE_TOKEN:-false}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+      WECHAT_APPID: ${WECHAT_APPID:-}
+      WECHAT_SECRET: ${WECHAT_SECRET:-}
+      STT_PROVIDER: ${STT_PROVIDER:-auto}       # auto | webspeech | openai | whisper
+      STT_OPENAI_MODEL: ${STT_OPENAI_MODEL:-gpt-4o-mini-transcribe}
       STT_URL: ${STT_URL:-http://whisper:9000}  # used when STT_PROVIDER=whisper
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}       # AI assistant (read from .env; never committed)
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5.5}    # OpenAI chat model for the assistant
+      OPENAI_VISION_MODEL: ${OPENAI_VISION_MODEL:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
     volumes:
       - scivox-data:/app/data                   # SQLite database + uploaded scans
+    restart: unless-stopped
+
+  # No-domain prototype endpoint. Run:
+  #   docker compose --profile prototype up -d --build
+  # Then read the public https://*.trycloudflare.com URL from:
+  #   docker compose logs -f prototype-tunnel
+  prototype-tunnel:
+    image: cloudflare/cloudflared:latest
+    container_name: scivox-prototype-tunnel
+    profiles: ["prototype"]
+    depends_on:
+      - scivox
+    command: tunnel --no-autoupdate --url http://scivox:3000
+    restart: unless-stopped
+
+  # Permanent-domain HTTPS endpoint. Point DNS at this server, set DOMAIN and
+  # BASE_URL=https://DOMAIN in .env, then run:
+  #   docker compose --profile public up -d --build
+  caddy:
+    image: caddy:2-alpine
+    container_name: scivox-caddy
+    profiles: ["public"]
+    depends_on:
+      - scivox
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
     restart: unless-stopped
 
   # Self-hosted speech-to-text. Only starts with the "whisper" profile:
@@ -37,3 +89,5 @@ services:
 volumes:
   scivox-data:
   whisper-cache:
+  caddy-data:
+  caddy-config:

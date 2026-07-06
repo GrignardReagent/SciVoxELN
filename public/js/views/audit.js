@@ -15,12 +15,14 @@ export const renderAudit = guard(async (root, ctx) => {
     </div>
     <div class="card" style="padding:0;overflow:auto">
       <table class="tbl">
-        <thead><tr><th>Timestamp (ISO)</th><th>User</th><th>Action</th><th>Detail</th></tr></thead>
+        <thead><tr><th>Timestamp (ISO)</th><th>User</th><th>Action</th><th>Project</th><th>Detail</th><th>Hash chain</th></tr></thead>
         <tbody>${rows.map(a => `<tr>
           <td class="mono">${esc(a.ts)}</td>
           <td>${esc(a.user)}<div class="muted" style="font-size:11px">${esc(a.role || '')}</div></td>
           <td><b>${esc(a.action)}</b></td>
-          <td class="muted">${esc(a.detail || '')}</td></tr>`).join('') || '<tr><td colspan="4" class="muted" style="padding:20px">No events.</td></tr>'}</tbody>
+          <td class="muted mono">${esc(a.project_id || '—')}</td>
+          <td class="muted audit-detail">${esc(a.detail || '')}</td>
+          <td class="mono muted" style="font-size:11px">${esc((a.hash || '').slice(0, 16))}${a.previous_hash ? `<div>prev ${esc(a.previous_hash.slice(0, 16))}</div>` : ''}</td></tr>`).join('') || '<tr><td colspan="6" class="muted" style="padding:20px">No events.</td></tr>'}</tbody>
       </table>
     </div>`;
 });

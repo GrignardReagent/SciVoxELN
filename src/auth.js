@@ -2,9 +2,9 @@
  * Authentication primitives — dependency-light, built on node:crypto.
  *
  *  - Passwords: scrypt with a per-user random salt (constant-time compare).
- *  - Sessions: a signed, HttpOnly cookie carrying the user id + expiry, HMAC'd
- *    with a server secret. No server-side session store needed; stateless.
- *  - Roles: a simple hierarchy (user < admin) enforced by requireRole().
+ *  - Sessions: a signed, HttpOnly cookie backed by a server-side session row,
+ *    so admins can revoke sessions immediately.
+ *  - Roles: a hierarchy enforced by requireRole().
  *
  * This replaces the earlier stubbed identity middleware. Identity is now derived
  * server-side from the session cookie — never trusted from client headers.
@@ -13,12 +13,12 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Users } from './db.js';
+import { Sessions, Users, fingerprint } from './db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '..', 'data');
 
-export const ROLES = { user: 1, admin: 2 };
+export const ROLES = { viewer: 1, user: 2, scientist: 2, reviewer: 3, admin: 4 };
 export const COOKIE = 'sv_session';
 const SESSION_DAYS = 7;
 
@@ -54,21 +54,37 @@ const b64u = buf => Buffer.from(buf).toString('base64url');
 function sign(data) {
   return crypto.createHmac('sha256', SECRET).update(data).digest('base64url');
 }
-export function makeToken(userId) {
-  const payload = b64u(JSON.stringify({ uid: userId, exp: Date.now() + SESSION_DAYS * 864e5 }));
+export function makeToken(userId, sessionId = crypto.randomUUID(), exp = Date.now() + SESSION_DAYS * 864e5) {
+  const payload = b64u(JSON.stringify({ uid: userId, sid: sessionId, exp }));
   return `${payload}.${sign(payload)}`;
 }
-export function readToken(token) {
+function readSignedPayload(token) {
   if (!token || !token.includes('.')) return null;
   const [payload, mac] = token.split('.');
   const expect = sign(payload);
   const A = Buffer.from(mac), B = Buffer.from(expect);
   if (A.length !== B.length || !crypto.timingSafeEqual(A, B)) return null;
   try {
-    const { uid, exp } = JSON.parse(Buffer.from(payload, 'base64url').toString());
-    if (!uid || !exp || Date.now() > exp) return null;
-    return uid;
+    const parsed = JSON.parse(Buffer.from(payload, 'base64url').toString());
+    if (!parsed.uid || !parsed.sid || !parsed.exp || Date.now() > parsed.exp) return null;
+    return parsed;
   } catch { return null; }
+}
+export function readToken(token) {
+  const parsed = readSignedPayload(token);
+  if (!parsed) return null;
+  const session = Sessions.getValid(parsed.sid, fingerprint(token));
+  return session ? parsed.uid : null;
+}
+
+export function revokeSessionToken(token) {
+  const parsed = readSignedPayload(token);
+  if (!parsed) return 0;
+  return Sessions.revoke(parsed.sid, fingerprint(token));
+}
+
+export function revokeUserSessions(userId) {
+  return Sessions.revokeUser(userId);
 }
 
 /* ---- cookies ---- */
@@ -82,14 +98,29 @@ export function parseCookies(req) {
   }
   return out;
 }
-export function setSessionCookie(res, userId) {
-  const secure = process.env.COOKIE_SECURE === 'true' || process.env.NODE_ENV === 'production';
+export function secureCookiesEnabled() {
+  if (process.env.COOKIE_SECURE === 'true') return true;
+  if (process.env.COOKIE_SECURE === 'false') return false;
+  return process.env.NODE_ENV === 'production';
+}
+export function setSessionCookie(res, userId, req = null) {
+  const sid = crypto.randomUUID();
+  const exp = Date.now() + SESSION_DAYS * 864e5;
+  const token = makeToken(userId, sid, exp);
+  Sessions.create({
+    id: sid,
+    userId,
+    tokenHash: fingerprint(token),
+    expiresAt: new Date(exp).toISOString(),
+    userAgent: req?.headers?.['user-agent'] || '',
+    ip: req?.ip || req?.socket?.remoteAddress || ''
+  });
   const attrs = [
-    `${COOKIE}=${makeToken(userId)}`,
+    `${COOKIE}=${token}`,
     'HttpOnly', 'Path=/', 'SameSite=Lax',
     `Max-Age=${SESSION_DAYS * 86400}`
   ];
-  if (secure) attrs.push('Secure');
+  if (secureCookiesEnabled()) attrs.push('Secure');
   res.setHeader('Set-Cookie', attrs.join('; '));
 }
 export function clearSessionCookie(res) {
