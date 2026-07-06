@@ -51,13 +51,13 @@ export const api = {
   createExperiment: d => req('POST', '/api/experiments', d),
   updateExperiment: (id, d) => req('PATCH', `/api/experiments/${id}`, d),
   lockExperiment: id => req('POST', `/api/experiments/${id}/lock`),
-  deleteExperiment: id => req('DELETE', `/api/experiments/${id}`),
+  deleteExperiment: (id, d) => req('DELETE', `/api/experiments/${id}`, d),
   addEntry: (id, d) => req('POST', `/api/experiments/${id}/entries`, d),
   // entries
   entries: () => req('GET', '/api/entries'),
   updateEntry: (id, d) => req('PATCH', `/api/entries/${id}`, d),
   signEntry: (id, d = {}) => req('POST', `/api/entries/${id}/sign`, d),
-  deleteEntry: id => req('DELETE', `/api/entries/${id}`),
+  deleteEntry: (id, d) => req('DELETE', `/api/entries/${id}`, d),
   batchDeleteEntries: entryIds => req('DELETE', '/api/entries/batch', { entryIds }),
   // plans
   plans: () => req('GET', '/api/plans'),

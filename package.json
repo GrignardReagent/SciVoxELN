@@ -22,5 +22,8 @@
     "multer": "^2.0.0"
   },
   "author": "SciVox",
-  "license": "UNLICENSED"
+  "license": "UNLICENSED",
+  "devDependencies": {
+    "@playwright/test": "^1.61.1"
+  }
 }

@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { Audit, Entries, ExperimentExports, Experiments, Projects, Refs, fingerprint } from '../db.js';
+import { requireRole } from '../auth.js';
 
 const r = Router();
 
@@ -47,13 +48,23 @@ r.post('/:id/lock', (req, res) => {
   res.json(updated);
 });
 
-r.delete('/:id', (req, res) => {
+r.delete('/:id', requireRole('admin'), (req, res) => {
   const exp = Experiments.get(req.params.id, req.user);
   if (!exp) return res.status(404).json({ error: 'Experiment not found' });
-  if (!Projects.canAccessProject(req.user, exp.project_id, 'owner')) return res.status(403).json({ error: 'Project owner access required' });
   if (exp.status === 'locked') return res.status(409).json({ error: 'Cannot delete a locked experiment' });
+  const reason = String(req.body?.reason || '').trim();
+  const entries = exp.entries || [];
+  const entryHashes = entries.map(en => en.hash).filter(Boolean);
   Experiments.remove(req.params.id);
-  Audit.log(req.user.name, req.user.role, 'DELETE_EXPERIMENT', `"${exp.title}" (${exp.id})`, { projectId: exp.project_id });
+  Audit.log(req.user.name, req.user.role, 'DELETE_EXPERIMENT',
+    [
+      `admin deleted experiment "${exp.title}" (${exp.id})`,
+      `project ${exp.project_name || exp.project || exp.project_id || 'unknown'}`,
+      `status ${exp.status}`,
+      `entries deleted: ${entries.length}`,
+      entryHashes.length ? `entry hashes: ${entryHashes.join(', ')}` : 'entry hashes: none',
+      reason ? `reason: ${reason}` : 'no reason provided'
+    ].join(' | '), { projectId: exp.project_id });
   res.json({ ok: true });
 });
 

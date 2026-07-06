@@ -120,6 +120,41 @@ test('MVP pilot workflow: projects, access, signatures, exports, audit and sessi
     assert.equal(figure.raw_image_url, rawUpload.url);
     assert.equal(figure.clean_image_url, cleanUpload.url);
 
+    const singleDeleteEntry = await scientist.req(base, 'POST', `/api/experiments/${exp.id}/entries`, {
+      type: 'note',
+      text: 'Duplicate note to delete from the experiment page.'
+    });
+    await assert.rejects(
+      () => scientist.req(base, 'DELETE', `/api/entries/${singleDeleteEntry.id}`, { reason: 'scientist should not delete entries' }),
+      /403/
+    );
+    await admin.req(base, 'DELETE', `/api/entries/${singleDeleteEntry.id}`, { reason: 'duplicate note from experiment page' });
+    const expAfterEntryDelete = await admin.req(base, 'GET', `/api/experiments/${exp.id}`);
+    assert.equal(expAfterEntryDelete.entries.some(en => en.id === singleDeleteEntry.id), false);
+
+    const deletableExp = await admin.req(base, 'POST', '/api/experiments', {
+      project_id: project.id,
+      title: 'Temporary calibration run',
+      objective: 'Exercise deletion audit context.'
+    });
+    const deletableEntry = await scientist.req(base, 'POST', `/api/experiments/${deletableExp.id}/entries`, {
+      type: 'note',
+      text: 'Temporary observation for deletion.'
+    });
+    await admin.req(base, 'PATCH', `/api/projects/${project.id}/members`, {
+      email: 'sci@biotech.test',
+      role: 'owner'
+    });
+    await assert.rejects(
+      () => scientist.req(base, 'DELETE', `/api/experiments/${deletableExp.id}`, { reason: 'owner should not delete experiments' }),
+      /403/
+    );
+    await admin.req(base, 'DELETE', `/api/experiments/${deletableExp.id}`, { reason: 'duplicate calibration run' });
+    await assert.rejects(
+      () => admin.req(base, 'GET', `/api/experiments/${deletableExp.id}`),
+      /404/
+    );
+
     await assert.rejects(
       () => scientist.req(base, 'POST', `/api/entries/${entry.id}/sign`, { meaning: 'author', password: 'wrong-password' }),
       /401/
@@ -150,6 +185,19 @@ test('MVP pilot workflow: projects, access, signatures, exports, audit and sessi
     const audit = await admin.req(base, 'GET', `/api/audit?project=${project.id}`);
     assert.ok(audit.some(a => a.action === 'SIGN_ENTRY'));
     assert.ok(audit.some(a => a.action === 'ADD_FIGURE_ENTRY'));
+    assert.ok(audit.some(a =>
+      a.action === 'DELETE_ENTRY' &&
+      a.detail.includes(singleDeleteEntry.id) &&
+      a.detail.includes('reason: duplicate note from experiment page') &&
+      a.detail.includes(`hash ${singleDeleteEntry.hash}`)
+    ));
+    assert.ok(audit.some(a =>
+      a.action === 'DELETE_EXPERIMENT' &&
+      a.detail.includes(deletableExp.id) &&
+      a.detail.includes('reason: duplicate calibration run') &&
+      a.detail.includes('entries deleted: 1') &&
+      a.detail.includes(`entry hashes: ${deletableEntry.hash}`)
+    ));
     assert.ok(audit.every(a => a.hash && a.previous_hash != null));
 
     const search = await scientist.req(base, 'GET', '/api/search?q=formulation clarity');

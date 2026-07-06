@@ -66,6 +66,7 @@ and repo-native workflow tracking.
 - [ ] Feature improvement: Observe run.
 - [ ] Repository hygiene: remove tracked runtime `data/` files from history /
   future commits in a dedicated cleanup, leaving runtime state gitignored.
+- [ ] Feature - Lab Animal Tracking: track animal movements
 
 ## Done
 
@@ -133,8 +134,56 @@ and repo-native workflow tracking.
 - [x] Make this mobile friendly. dvh height, 16px inputs (no iOS zoom),
   horizontally-scrollable tables, safe-area insets, tighter small-screen layout,
   stacked AI input, theme-color; on top of the existing nav drawer.
+- [x] Enable admin users to delete experiments and entries, with deletion
+  context recorded in the audit trail. Entry deletes tombstone records with
+  hashes/excerpts; experiment deletes are admin-only and audit reason, status,
+  project, entry count and entry hashes before removal; experiment entry cards
+  show the delete affordance to all users, disabled with an admin-only hint for
+  non-admins.
 
 ## Change Log
+
+### 2026-07-06T20:34:49Z - Add experiment delete UI control
+
+- Task: SVX-000
+- Branch: `master`
+- Summary: Added an admin-only experiment delete button on experiment detail
+  pages, with locked/non-admin disabled states, a required reason prompt,
+  redirect back to the experiment list after deletion, and regression coverage
+  for the frontend wiring.
+- Validation: `npm test` passed with 10 tests using a temporary Node v24 runtime;
+  Playwright verified the desktop delete modal/delete/404 flow and a fresh
+  mobile viewport delete-button visibility check.
+- Files:
+  - `TRACKING.md`
+  - `public/js/views/experiments.js`
+  - `tests/experiment-entry-delete-ui.test.js`
+
+### 2026-07-06T14:46:53Z - Surface experiment entry delete controls
+
+- Task: SVX-000
+- Branch: `master`
+- Summary: Made per-entry delete controls visible on experiment pages for all
+  users, disabled with an admin-only hint for non-admins, and added a reason
+  prompt plus regression coverage for single-entry deletion audit context.
+- Files:
+  - `TRACKING.md`
+  - `public/js/views/experiments.js`
+  - `tests/experiment-entry-delete-ui.test.js`
+  - `tests/mvp-api.test.js`
+
+### 2026-07-06T14:29:10Z - Require admin deletion audit context
+
+- Task: SVX-000
+- Branch: `master`
+- Summary: Made experiment deletion admin-only and expanded delete audit
+  context with reason, project/status, deleted entry count and entry hashes;
+  kept entry deletion audit coverage and optional API delete bodies aligned.
+- Files:
+  - `TRACKING.md`
+  - `public/js/api.js`
+  - `src/routes/experiments.js`
+  - `tests/mvp-api.test.js`
 
 ### 2026-07-06T14:14:57Z - Merge sketch-to-figure feature
 

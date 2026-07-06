@@ -59,6 +59,7 @@ export const renderExperiment = guard(async (root, ctx, id) => {
   const e = await api.experiment(id);
   ctx.setHead(e.title, `${e.project_name || e.project || 'General'} · created ${fmtShort(e.created_at)}`);
   const locked = e.status === 'locked';
+  const deleteButton = experimentDeleteButton(locked);
   root.innerHTML = `
     <button class="btn ghost sm" data-back>← Back to experiments</button>
     <div class="split" style="margin-top:14px">
@@ -71,6 +72,7 @@ export const renderExperiment = guard(async (root, ctx, id) => {
             <a class="btn ghost sm" href="/api/experiments/${esc(e.id)}/export?format=html" download>Export HTML</a>
             <a class="btn ghost sm" href="/api/experiments/${esc(e.id)}/export" download>Export JSON</a>
             ${locked ? '<span class="pill">🔒 Locked — read only</span>' : '<button class="btn sec sm" data-observe>👁 Observe run</button><button class="btn ok sm" data-lock>🔒 Lock experiment</button>'}
+            ${deleteButton}
           </div>
         </div>
         ${locked ? '' : '<div id="composerMount"></div>'}
@@ -109,6 +111,7 @@ export const renderExperiment = guard(async (root, ctx, id) => {
   if (lockBtn) lockBtn.onclick = () => confirmModal('Lock experiment?',
     'Locking makes this experiment read-only. No new entries can be added.',
     guard(async () => { await api.lockExperiment(e.id); toast('Experiment locked'); ctx.go('experiments', { id: e.id }); }));
+  wireExperimentDeleteButton(root, ctx, e);
   wireSignButtons(root, ctx, e.id);
   wireDeleteButtons(root, ctx, e.id);
   wireEditEntries(root, ctx, e.id);
@@ -117,6 +120,48 @@ export const renderExperiment = guard(async (root, ctx, id) => {
   mountAssistant(root, e);
   mountReferences(root, e);
 });
+
+function experimentDeleteButton(locked) {
+  if (!isAdmin()) {
+    return '<button class="btn danger sm" type="button" disabled aria-disabled="true" title="Admin only">Delete experiment</button><span class="muted" style="font-size:11px">Admin only</span>';
+  }
+  if (locked) {
+    return '<button class="btn danger sm" type="button" disabled aria-disabled="true" title="Locked experiments cannot be deleted">Delete experiment</button>';
+  }
+  return '<button class="btn danger sm" type="button" data-delete-experiment>Delete experiment</button>';
+}
+
+function wireExperimentDeleteButton(root, ctx, exp) {
+  const btn = root.querySelector('[data-delete-experiment]');
+  if (!btn) return;
+  btn.onclick = () => {
+    const entryCount = exp.entries?.length || 0;
+    modal(`<h3>Delete experiment?</h3>
+      <p class="muted">Only admins can do this. The experiment and ${entryCount} notebook entr${entryCount === 1 ? 'y' : 'ies'} will be removed, and the reason will be recorded in the audit trail.</p>
+      <label class="fld">Reason</label>
+      <textarea class="txt" id="experimentDeleteReason" placeholder="e.g. Duplicate calibration run created during setup"></textarea>
+      <div class="auth-err" id="experimentDeleteErr"></div>
+      <div class="row" style="margin-top:16px;justify-content:flex-end">
+        <button class="btn ghost" data-x>Cancel</button>
+        <button class="btn danger" data-delete-experiment-confirm>Delete experiment</button>
+      </div>`);
+    const m = document.getElementById('modal');
+    m.querySelector('[data-x]').onclick = closeModal;
+    m.querySelector('[data-delete-experiment-confirm]').onclick = guard(async () => {
+      const err = m.querySelector('#experimentDeleteErr');
+      const reason = m.querySelector('#experimentDeleteReason').value.trim();
+      if (!reason) {
+        err.textContent = 'Deletion reason required';
+        return;
+      }
+      await api.deleteExperiment(exp.id, { reason });
+      closeModal();
+      toast('Experiment deleted');
+      ctx.go('experiments');
+    });
+    setTimeout(() => m.querySelector('#experimentDeleteReason').focus(), 40);
+  };
+}
 
 /* --------------------------- References --------------------------- */
 async function mountReferences(root, exp) {
@@ -282,6 +327,9 @@ function entryHTML(en, locked) {
   const canSign = !en.signed_by && !locked && getUser();
   const canEdit = !en.signed_by && !locked && getUser();
   const canDelete = isAdmin();
+  const deleteButton = canDelete
+    ? `<button class="btn danger sm" data-delete-entry="${esc(en.id)}">Delete entry</button>`
+    : `<button class="btn danger sm" type="button" disabled aria-disabled="true" title="Admin only">Delete entry</button><span class="muted" style="font-size:11px">Admin only</span>`;
   return `<div class="entry ${type}" id="entry-${esc(en.id)}">
     <div class="eh">${badge}
       <span>🕒 ${fmt(en.created_at)}</span>
@@ -302,7 +350,7 @@ function entryHTML(en, locked) {
     <div class="hashline">fingerprint ${en.hash}${en.signed_by ? ` · signed ${fmt(en.signed_at)} · sig ${en.sig}` : ''}</div>
     <div class="row" style="margin-top:8px">
       ${canSign ? `<button class="btn ok sm" data-sign="${en.id}">🔒 Sign &amp; lock entry</button>` : ''}
-      ${canDelete ? `<button class="btn danger sm" data-delete-entry="${en.id}">Delete entry</button>` : ''}
+      ${deleteButton}
     </div>
   </div>`;
 }
@@ -394,9 +442,26 @@ function wireSignButtons(root, ctx, expId) {
 }
 
 function wireDeleteButtons(root, ctx, expId) {
-  root.querySelectorAll('[data-delete-entry]').forEach(b => b.onclick = () => confirmModal('Delete notebook entry?',
-    'Only admins can do this. The entry will be removed from the experiment, and the deletion will be recorded in the audit trail.',
-    guard(async () => { await api.deleteEntry(b.dataset.deleteEntry); toast('Entry deleted'); ctx.go('experiments', { id: expId }); }), 'Delete'));
+  root.querySelectorAll('[data-delete-entry]').forEach(b => b.onclick = () => {
+    modal(`<h3>Delete notebook entry?</h3>
+      <p class="muted">Only admins can do this. The entry will be removed from the experiment, and the deletion will be recorded in the audit trail.</p>
+      <label class="fld">Reason <span class="muted">(optional)</span></label>
+      <textarea class="txt" id="deleteReason" placeholder="e.g. Duplicate entry created during transcription review"></textarea>
+      <div class="row" style="margin-top:16px;justify-content:flex-end">
+        <button class="btn ghost" data-x>Cancel</button>
+        <button class="btn danger" data-delete-confirm>Delete</button>
+      </div>`);
+    const m = document.getElementById('modal');
+    m.querySelector('[data-x]').onclick = closeModal;
+    m.querySelector('[data-delete-confirm]').onclick = guard(async () => {
+      const reason = m.querySelector('#deleteReason').value.trim();
+      await api.deleteEntry(b.dataset.deleteEntry, { reason });
+      closeModal();
+      toast('Entry deleted');
+      ctx.go('experiments', { id: expId });
+    });
+    setTimeout(() => m.querySelector('#deleteReason').focus(), 40);
+  });
 }
 
 async function editExperimentModal(ctx, e) {
