@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -125,6 +126,59 @@ test('backup and restore scripts preserve the data directory', async () => {
   assert.equal(fs.readFileSync(path.join(restore, 'uploads', 'scan.txt'), 'utf8'), 'scan');
 });
 
+test('migration upgrades a pre-project database without crashing', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'scivox-legacy-db-'));
+  const dbPath = path.join(tmp, 'scivox.db');
+  const legacy = new DatabaseSync(dbPath);
+  legacy.exec(`
+    CREATE TABLE users (
+      id TEXT PRIMARY KEY, email TEXT UNIQUE, name TEXT NOT NULL DEFAULT '',
+      role TEXT NOT NULL DEFAULT 'user', password_hash TEXT,
+      provider TEXT NOT NULL DEFAULT 'local', provider_id TEXT,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
+    CREATE TABLE experiments (
+      id TEXT PRIMARY KEY, title TEXT NOT NULL, project TEXT DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'active', objective TEXT DEFAULT '',
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
+    CREATE TABLE entries (
+      id TEXT PRIMARY KEY, experiment_id TEXT NOT NULL, type TEXT NOT NULL DEFAULT 'note',
+      author TEXT DEFAULT 'Unknown', role TEXT DEFAULT '', text TEXT NOT NULL,
+      image_url TEXT, hash TEXT NOT NULL, signed_by TEXT, signed_role TEXT,
+      signed_at TEXT, sig TEXT, created_at TEXT NOT NULL
+    );
+    CREATE TABLE plans (
+      id TEXT PRIMARY KEY, experiment_id TEXT, title TEXT NOT NULL,
+      hypothesis TEXT DEFAULT '', variables TEXT DEFAULT '[]', steps TEXT DEFAULT '[]',
+      materials TEXT DEFAULT '[]', expected_outcome TEXT DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'draft', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
+    CREATE TABLE inventory (
+      id TEXT PRIMARY KEY, name TEXT NOT NULL, category TEXT DEFAULT '',
+      catalog_number TEXT DEFAULT '', lot_number TEXT DEFAULT '', location TEXT DEFAULT '',
+      quantity REAL NOT NULL DEFAULT 0, unit TEXT DEFAULT '', reorder_level REAL NOT NULL DEFAULT 0,
+      expiry_date TEXT, notes TEXT DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
+    CREATE TABLE audit (
+      id TEXT PRIMARY KEY, ts TEXT NOT NULL, user TEXT DEFAULT 'Unknown',
+      role TEXT DEFAULT '', action TEXT NOT NULL, detail TEXT DEFAULT ''
+    );
+  `);
+  legacy.close();
+
+  await runNodeEval("import('./src/db.js').then(m => m.migrate())", { DATA_DIR: tmp, DB_PATH: dbPath, NODE_NO_WARNINGS: '1' });
+
+  const upgraded = new DatabaseSync(dbPath);
+  const auditCols = upgraded.prepare('PRAGMA table_info(audit)').all().map(c => c.name);
+  const expCols = upgraded.prepare('PRAGMA table_info(experiments)').all().map(c => c.name);
+  assert.ok(auditCols.includes('project_id'));
+  assert.ok(auditCols.includes('hash'));
+  assert.ok(expCols.includes('project_id'));
+  assert.ok(upgraded.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_audit_project'").get());
+  upgraded.close();
+});
+
 function jar() {
   let cookie = '';
   return {
@@ -157,6 +211,20 @@ function listen(app) {
 function runNode(file, env) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [file], {
+      cwd: path.join(import.meta.dirname, '..'),
+      env: { ...process.env, ...env },
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    let stdout = '', stderr = '';
+    child.stdout.on('data', d => { stdout += d.toString(); });
+    child.stderr.on('data', d => { stderr += d.toString(); });
+    child.on('exit', code => code === 0 ? resolve(stdout) : reject(new Error(stderr || stdout || `exit ${code}`)));
+  });
+}
+
+function runNodeEval(code, env) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['-e', code], {
       cwd: path.join(import.meta.dirname, '..'),
       env: { ...process.env, ...env },
       stdio: ['ignore', 'pipe', 'pipe']

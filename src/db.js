@@ -203,7 +203,6 @@ export function migrate() {
       hash          TEXT DEFAULT ''
     );
     CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit(ts);
-    CREATE INDEX IF NOT EXISTS idx_audit_project ON audit(project_id);
 
     CREATE TABLE IF NOT EXISTS experiment_exports (
       id            TEXT PRIMARY KEY,
@@ -240,6 +239,7 @@ export function migrate() {
   addColumn('audit', 'project_id', 'TEXT');
   addColumn('audit', 'previous_hash', "TEXT DEFAULT ''");
   addColumn('audit', 'hash', "TEXT DEFAULT ''");
+  db.exec('CREATE INDEX IF NOT EXISTS idx_audit_project ON audit(project_id);');
 
   ensureDefaultWorkspace();
   backfillLegacyHashes();

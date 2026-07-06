@@ -107,8 +107,12 @@ trail, self-hosted Whisper option, theming, mobile support, and MVP API tests.
   verification token APIs, audit filters, experiment JSON/HTML exports, ranked
   access-scoped search, and backup/restore scripts.
 - Added MVP validation and pilot sales docs; updated README and `.env.example`.
-- Added `tests/mvp-api.test.js`; `npm test` passes (2 tests: pilot API workflow
-  and backup/restore).
+- Added `tests/mvp-api.test.js`; `npm test` passes (3 tests: pilot API workflow,
+  backup/restore and legacy migration).
+- Fixed Docker prototype deployment on upgraded databases: migration now creates
+  the `audit(project_id)` index only after adding the column. Added a legacy-DB
+  migration regression test; rebuilt the prototype and verified the public
+  Cloudflare URL returns `200`.
 
 ### 2026-07-06
 - Advised on free permanent-domain options for SciVox ELN: free subdomain/DDNS
