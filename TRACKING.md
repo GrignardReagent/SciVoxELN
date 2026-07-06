@@ -61,10 +61,11 @@ and repo-native workflow tracking.
   current prototype samples still frames to control bandwidth and preserve
   reviewability.
 - [ ] Postgres repository implementation for larger enterprise deployments.
-- [ ] Feature: Allow user to sketch workflows and diagrams.
 - [ ] Feature improvement: "Summarise" button to summarise transcripts and notes
   into a concise summary.
 - [ ] Feature improvement: Observe run.
+- [ ] Repository hygiene: remove tracked runtime `data/` files from history /
+  future commits in a dedicated cleanup, leaving runtime state gitignored.
 
 ## Done
 
@@ -78,6 +79,8 @@ and repo-native workflow tracking.
 - OCR handwriting scan (Tesseract.js) via upload or live camera (rear camera on
   phones); image is contrast-normalized/adaptive-thresholded before OCR and
   uploaded/stored with the entry.
+- Sketch-to-figure capture: browser drawing canvas, cleaned diagram upload,
+  raw sketch preservation, and figure entries with raw/clean image evidence.
 - Audit-ready controls: SHA-256 content fingerprints, password-confirmed
   e-signatures with signature meaning, experiment lock (409 on writes),
   deletion tombstones, hash-chained audit trail + CSV export.
@@ -132,6 +135,25 @@ and repo-native workflow tracking.
   stacked AI input, theme-color; on top of the existing nav drawer.
 
 ## Change Log
+
+### 2026-07-06T14:14:57Z - Merge sketch-to-figure feature
+
+- Task: SVX-000
+- Branch: `master` + `origin/sketch-to-figure`
+- Summary: Safely merged the sketch-to-figure drawing tool into current
+  `master`, preserving Entries Library/workflow tracking/deployment behavior
+  while adding figure upload paths, raw/clean image fields, figure rendering,
+  and API coverage.
+- Files:
+  - `TRACKING.md`
+  - `public/css/styles.css`
+  - `public/js/api.js`
+  - `public/js/sketchpad.js`
+  - `public/js/views/experiments.js`
+  - `src/db.js`
+  - `src/routes/experiments.js`
+  - `src/routes/uploads.js`
+  - `tests/mvp-api.test.js`
 
 ### 2026-07-06T13:38:36Z - Make tracking standalone
 

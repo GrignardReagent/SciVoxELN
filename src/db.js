@@ -160,6 +160,8 @@ export function migrate() {
       role              TEXT DEFAULT '',
       text              TEXT NOT NULL,
       image_url         TEXT,
+      raw_image_url     TEXT,
+      clean_image_url   TEXT,
       hash              TEXT NOT NULL,
       source_entry_ids  TEXT DEFAULT '[]',
       signed_by         TEXT,
@@ -252,6 +254,8 @@ export function migrate() {
   addColumn('entries', 'delete_reason', 'TEXT');
   addColumn('entries', 'source_entry_ids', "TEXT DEFAULT '[]'");
   addColumn('entries', 'updated_at', 'TEXT');
+  addColumn('entries', 'raw_image_url', 'TEXT');
+  addColumn('entries', 'clean_image_url', 'TEXT');
   addColumn('plans', 'project_id', 'TEXT');
   addColumn('audit', 'project_id', 'TEXT');
   addColumn('audit', 'previous_hash', "TEXT DEFAULT ''");
@@ -585,13 +589,27 @@ export const Entries = {
     if (!ids.length) return [];
     return db.prepare(`${select} AND e.project_id IN (${placeholders(ids)}) ORDER BY en.created_at DESC`).all(...ids);
   },
-  create(expId, { type = 'note', author = 'Unknown', role = '', text, imageUrl = null, sourceEntryIds = [] }) {
+  create(expId, {
+    type = 'note',
+    author = 'Unknown',
+    role = '',
+    text,
+    imageUrl = null,
+    rawImageUrl = null,
+    cleanImageUrl = null,
+    sourceEntryIds = []
+  }) {
     const _id = id(), t = now();
     const sources = cleanEntryIds(sourceEntryIds);
-    const fp = fingerprint(JSON.stringify({ experiment_id: expId, type, text, image_url: imageUrl || null, source_entry_ids: sources, created_at: t }));
-    db.prepare(`INSERT INTO entries (id,experiment_id,type,author,role,text,image_url,hash,source_entry_ids,created_at,updated_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
-      .run(_id, expId, type, author, role, text, imageUrl, fp, JSON.stringify(sources), t, t);
+    const fp = fingerprint(JSON.stringify({
+      experiment_id: expId, type, text, image_url: imageUrl || null,
+      raw_image_url: rawImageUrl || null, clean_image_url: cleanImageUrl || null,
+      source_entry_ids: sources,
+      created_at: t
+    }));
+    db.prepare(`INSERT INTO entries (id,experiment_id,type,author,role,text,image_url,raw_image_url,clean_image_url,hash,source_entry_ids,created_at,updated_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .run(_id, expId, type, author, role, text, imageUrl, rawImageUrl, cleanImageUrl, fp, JSON.stringify(sources), t, t);
     db.prepare('UPDATE experiments SET updated_at=? WHERE id=?').run(t, expId);
     return db.prepare('SELECT * FROM entries WHERE id = ?').get(_id);
   },
@@ -632,6 +650,8 @@ export const Entries = {
       type: en.type,
       text,
       image_url: en.image_url || null,
+      raw_image_url: en.raw_image_url || null,
+      clean_image_url: en.clean_image_url || null,
       source_entry_ids: parseJsonArray(en.source_entry_ids),
       created_at: en.created_at,
       updated_at: t

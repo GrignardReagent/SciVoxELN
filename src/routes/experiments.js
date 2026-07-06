@@ -100,11 +100,17 @@ r.post('/:id/entries', (req, res) => {
   }
   const entry = Entries.create(exp.id, {
     type: req.body.type, text, imageUrl: req.body.imageUrl || null,
+    rawImageUrl: req.body.rawImageUrl || null,
+    cleanImageUrl: req.body.cleanImageUrl || null,
     author: req.user.name, role: req.user.role, sourceEntryIds
   });
   if (entry.type === 'observe') {
     Audit.log(req.user.name, req.user.role, 'ADD_OBSERVE_ENTRY',
       `confirmed observe run in "${exp.title}" (entry ${entry.id})\n${auditText(text)}`, { projectId: exp.project_id });
+  } else if (entry.type === 'figure') {
+    Audit.log(req.user.name, req.user.role, 'ADD_FIGURE_ENTRY',
+      `attached figure to "${exp.title}" (entry ${entry.id}) | raw ${entry.raw_image_url || 'none'} | clean ${entry.clean_image_url || entry.image_url || 'none'}`,
+      { projectId: exp.project_id });
   } else {
     Audit.log(req.user.name, req.user.role, 'ADD_ENTRY', `${entry.type} entry in "${exp.title}"`, { projectId: exp.project_id });
   }

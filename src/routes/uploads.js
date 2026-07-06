@@ -28,7 +28,26 @@ const r = Router();
 
 r.post('/', upload.single('image'), (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No image uploaded' });
+  const folder = uploadFolder(req.body?.kind, req.body?.experimentId);
+  if (folder) {
+    const dir = path.join(UPLOAD_DIR, ...folder.split('/'));
+    fs.mkdirSync(dir, { recursive: true });
+    const target = path.join(dir, req.file.filename);
+    fs.renameSync(req.file.path, target);
+    return res.status(201).json({ url: `/uploads/${folder}/${req.file.filename}` });
+  }
   res.status(201).json({ url: `/uploads/${req.file.filename}` });
 });
 
 export default r;
+
+function uploadFolder(kind, experimentId = '') {
+  const expFolder = safeFolder(experimentId) || 'unassigned';
+  if (kind === 'figure-raw') return `figures/${expFolder}/raw`;
+  if (kind === 'figure-clean') return `figures/${expFolder}/clean`;
+  return '';
+}
+
+function safeFolder(value) {
+  return String(value || '').toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 80);
+}
