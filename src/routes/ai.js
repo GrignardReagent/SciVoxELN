@@ -10,7 +10,7 @@
  * OPENAI_VISION_MODEL (optional; defaults to OPENAI_MODEL).
  */
 import { Router } from 'express';
-import { Experiments, Audit } from '../db.js';
+import { Entries, Experiments, Audit } from '../db.js';
 
 const r = Router();
 const MODEL = process.env.OPENAI_MODEL || 'gpt-5.5';
@@ -73,6 +73,92 @@ r.post('/chat', async (req, res) => {
     const reply = data?.choices?.[0]?.message?.content?.trim() || '(no response)';
     Audit.log(req.user.name, req.user.role, 'AI_CHAT', exp ? `"${exp.title}"` : 'general', { projectId: exp?.project_id });
     res.json({ reply, model: MODEL });
+  } catch (e) {
+    res.status(502).json({ error: 'AI request failed: ' + e.message });
+  }
+});
+
+r.post('/process-entries', async (req, res) => {
+  if (!configured()) return res.status(501).json({ error: 'AI assistant is not configured (set OPENAI_API_KEY).' });
+
+  const ids = Array.from(new Set((req.body?.entryIds || []).map(String).filter(Boolean)));
+  const mode = req.body?.mode === 'action_plan' ? 'action_plan' : 'summary';
+  if (!ids.length) return res.status(400).json({ error: 'entryIds[] required' });
+  if (ids.length > 40) return res.status(400).json({ error: 'Select 40 entries or fewer' });
+
+  const entries = Entries.getManyDetailed(ids, req.user);
+  if (entries.length !== ids.length) return res.status(404).json({ error: 'One or more entries were not found or are not accessible' });
+
+  const projectIds = Array.from(new Set(entries.map(e => e.project_id).filter(Boolean)));
+  const experiments = Array.from(new Set(entries.map(e => `${e.experiment_title} (${e.experiment_id})`)));
+  const originalWordCount = countWords(entries.map(e => e.text).join(' '));
+  const summaryWordLimit = Math.max(1, Math.min(originalWordCount - 1, 140));
+  const entryBlock = entries.map((e, i) => [
+    `Entry ${i + 1}`,
+    `Experiment: ${e.experiment_title}`,
+    `Project: ${e.project_name || 'General'}`,
+    `Objective: ${e.experiment_objective || 'not set'}`,
+    `Type: ${e.type}`,
+    `Created: ${e.created_at}`,
+    `Author: ${e.author || 'Unknown'}`,
+    `Signed: ${e.signed_by ? `yes, ${e.signature_meaning || 'signed'} by ${e.signed_by}` : 'no'}`,
+    `Text:\n${String(e.text || '').slice(0, 6000)}`
+  ].join('\n')).join('\n\n---\n\n').slice(0, 24000);
+
+  const task = mode === 'action_plan'
+    ? 'Generate concise bullet points for writing or continuing the experiment.'
+    : 'Summarise the selected lab notebook entries in plain, concise language for a lab report.';
+
+  const system = {
+    role: 'system',
+    content:
+      'You are SciVox Assistant, embedded in an Electronic Lab Notebook for scientists. ' +
+      'Use only the supplied notebook entries. Do not invent measurements, outcomes, reagent identities, or conclusions. ' +
+      'Preserve uncertainty, call out missing information, and keep regulated lab records traceable. ' +
+      'Return plain human-readable text only. Do not use Markdown syntax, headings, bold text, code fences, or tables.'
+  };
+  const user = {
+    role: 'user',
+    content: [
+      task,
+      mode === 'action_plan'
+        ? 'Return exactly four "-" bullet lines only. Fill each bullet with one concise point under 20 words.'
+        : `Write one short paragraph or 3 to 5 short plain lines. The summary must be shorter than the original selected text and stay under ${summaryWordLimit} words.`,
+      mode === 'action_plan'
+        ? 'Do not add extra sections, commentary, numbering, Markdown emphasis, or explanations after the bullet list.'
+        : 'Do not include section headings. Avoid repeating timestamps, signatures, hashes, and metadata unless scientifically important.',
+      `Selected entries: ${entries.length}`,
+      `Original selected text word count: ${originalWordCount}`,
+      `Experiments represented: ${experiments.join('; ')}`,
+      '',
+      'Notebook entries:',
+      entryBlock
+    ].join('\n')
+  };
+
+  try {
+    const resp = await fetch(API_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
+      body: JSON.stringify({ model: MODEL, messages: [system, user] })
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      const msg = data?.error?.message || `OpenAI error ${resp.status}`;
+      return res.status(502).json({ error: msg });
+    }
+    const rawOutput = data?.choices?.[0]?.message?.content?.trim() || '(no response)';
+    const output = normalizeProcessedOutput(rawOutput, mode, { summaryWordLimit });
+    Audit.log(req.user.name, req.user.role, mode === 'action_plan' ? 'AI_ACTION_PLAN_ENTRIES' : 'AI_SUMMARISE_ENTRIES',
+      `${mode} for ${entries.length} selected entries across ${experiments.length} experiment(s)`, { projectId: projectIds.length === 1 ? projectIds[0] : null });
+    res.json({
+      mode,
+      output,
+      model: MODEL,
+      selectedCount: entries.length,
+      experimentIds: Array.from(new Set(entries.map(e => e.experiment_id))),
+      experimentTitles: Array.from(new Set(entries.map(e => e.experiment_title)))
+    });
   } catch (e) {
     res.status(502).json({ error: 'AI request failed: ' + e.message });
   }
@@ -150,4 +236,44 @@ function parseObservation(raw) {
   } catch {
     return { action: cleaned.slice(0, 500), objects: [], warnings: [], confidence: null };
   }
+}
+
+function countWords(text) {
+  return String(text || '').trim().split(/\s+/).filter(Boolean).length;
+}
+
+function normalizeProcessedOutput(raw, mode, { summaryWordLimit }) {
+  const cleaned = stripMarkdown(raw);
+  if (mode === 'action_plan') {
+    return applyBulletTemplate(cleaned);
+  }
+  return takeWords(cleaned.replace(/\s*\n+\s*/g, ' '), summaryWordLimit);
+}
+
+function stripMarkdown(text) {
+  return String(text || '')
+    .replace(/```[\s\S]*?```/g, '')
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/^[*-]\s+/gm, '')
+    .replace(/\*\*/g, '')
+    .replace(/__/g, '')
+    .trim();
+}
+
+function takeWords(text, limit) {
+  const words = String(text || '').trim().split(/\s+/).filter(Boolean);
+  if (words.length <= limit) return words.join(' ');
+  return words.slice(0, Math.max(1, limit)).join(' ') + '...';
+}
+
+function applyBulletTemplate(raw) {
+  const bulletCount = 4;
+  const bullets = raw.split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(Boolean)
+    .map(line => line.replace(/^(?:Action\s*)?\d+[\).:-]\s*/i, '').replace(/^-+\s*/, '').trim())
+    .filter(line => line && !/^[A-Z][A-Za-z\s]{0,40}:$/.test(line))
+    .slice(0, bulletCount);
+  while (bullets.length < bulletCount) bullets.push('No additional source-backed point.');
+  return bullets.map(line => `- ${takeWords(line, 19)}`).join('\n');
 }

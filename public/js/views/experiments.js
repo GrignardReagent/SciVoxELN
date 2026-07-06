@@ -110,6 +110,8 @@ export const renderExperiment = guard(async (root, ctx, id) => {
     guard(async () => { await api.lockExperiment(e.id); toast('Experiment locked'); ctx.go('experiments', { id: e.id }); }));
   wireSignButtons(root, ctx, e.id);
   wireDeleteButtons(root, ctx, e.id);
+  wireEditEntries(root, ctx, e.id);
+  wireSourceLinks(root);
   if (!locked) mountComposer(root.querySelector('#composerMount'), ctx, e.id);
   mountAssistant(root, e);
   mountReferences(root, e);
@@ -276,13 +278,24 @@ function entryHTML(en, locked) {
     note: '<span class="badge b-note">Note</span>'
   }[en.type] || '';
   const canSign = !en.signed_by && !locked && getUser();
+  const canEdit = !en.signed_by && !locked && getUser();
   const canDelete = isAdmin();
-  return `<div class="entry ${type}">
+  return `<div class="entry ${type}" id="entry-${esc(en.id)}">
     <div class="eh">${badge}
       <span>🕒 ${fmt(en.created_at)}</span>
       <span>· ${esc(en.author || 'Unknown')}${en.role ? ' (' + esc(en.role) + ')' : ''}</span>
-      ${en.signed_by ? `<span class="badge b-sig">🔒 ${esc(en.signature_meaning || 'signed')} by ${esc(en.signed_by)}</span>` : ''}</div>
-    <div class="body">${esc(en.text)}</div>
+      ${en.signed_by ? `<span class="badge b-sig">🔒 ${esc(en.signature_meaning || 'signed')} by ${esc(en.signed_by)}</span>` : ''}
+      ${en.updated_at && en.updated_at !== en.created_at ? `<span class="pill">edited ${fmtShort(en.updated_at)}</span>` : ''}
+    </div>
+    <div class="body ${canEdit ? 'editable-entry' : ''}" ${canEdit ? `data-edit-entry="${esc(en.id)}" title="Click to edit"` : ''}>${esc(en.text)}</div>
+    ${canEdit ? `<div class="entry-editor" data-entry-editor="${esc(en.id)}" style="display:none">
+      <textarea class="txt" data-entry-text="${esc(en.id)}">${esc(en.text)}</textarea>
+      <div class="row" style="margin-top:8px">
+        <button class="btn sm" data-save-entry="${esc(en.id)}">Save</button>
+        <button class="btn ghost sm" data-cancel-entry="${esc(en.id)}">Cancel</button>
+      </div>
+    </div>` : ''}
+    ${sourceTags(en)}
     ${en.image_url ? `<img class="thumb" src="${esc(en.image_url)}" alt="scan"/>` : ''}
     <div class="hashline">fingerprint ${en.hash}${en.signed_by ? ` · signed ${fmt(en.signed_at)} · sig ${en.sig}` : ''}</div>
     <div class="row" style="margin-top:8px">
@@ -290,6 +303,59 @@ function entryHTML(en, locked) {
       ${canDelete ? `<button class="btn danger sm" data-delete-entry="${en.id}">Delete entry</button>` : ''}
     </div>
   </div>`;
+}
+
+function sourceTags(en) {
+  const ids = parseSourceEntryIds(en.source_entry_ids);
+  if (!ids.length) return '';
+  return `<div class="source-tags"><span class="muted">Based on</span>
+    ${ids.map((id, i) => `<button class="source-tag" data-source-entry="${esc(id)}" type="button">note ${i + 1}</button>`).join('')}
+  </div>`;
+}
+
+function parseSourceEntryIds(value) {
+  try {
+    const parsed = JSON.parse(value || '[]');
+    return Array.isArray(parsed) ? parsed.map(String).filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
+function wireEditEntries(root, ctx, expId) {
+  root.querySelectorAll('[data-edit-entry]').forEach(body => body.onclick = () => {
+    const id = body.dataset.editEntry;
+    const editor = root.querySelector(`[data-entry-editor="${CSS.escape(id)}"]`);
+    if (!editor) return;
+    body.style.display = 'none';
+    editor.style.display = '';
+    editor.querySelector('textarea').focus();
+  });
+  root.querySelectorAll('[data-cancel-entry]').forEach(btn => btn.onclick = () => {
+    const id = btn.dataset.cancelEntry;
+    const editor = root.querySelector(`[data-entry-editor="${CSS.escape(id)}"]`);
+    const body = root.querySelector(`[data-edit-entry="${CSS.escape(id)}"]`);
+    if (editor) editor.style.display = 'none';
+    if (body) body.style.display = '';
+  });
+  root.querySelectorAll('[data-save-entry]').forEach(btn => btn.onclick = guard(async () => {
+    const id = btn.dataset.saveEntry;
+    const text = root.querySelector(`[data-entry-text="${CSS.escape(id)}"]`)?.value.trim();
+    if (!text) return toast('Entry text is required', true);
+    await api.updateEntry(id, { text });
+    toast('Entry updated');
+    ctx.go('experiments', { id: expId });
+  }));
+}
+
+function wireSourceLinks(root) {
+  root.querySelectorAll('[data-source-entry]').forEach(btn => btn.onclick = () => {
+    const target = root.querySelector(`#entry-${CSS.escape(btn.dataset.sourceEntry)}`);
+    if (!target) return toast('Source note is not visible here', true);
+    target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    target.classList.add('entry-focus');
+    setTimeout(() => target.classList.remove('entry-focus'), 1400);
+  });
 }
 
 function wireSignButtons(root, ctx, expId) {
