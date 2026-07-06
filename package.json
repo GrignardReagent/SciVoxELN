@@ -12,6 +12,9 @@
     "seed": "node --env-file-if-exists=.env src/seed.js",
     "backup": "node --env-file-if-exists=.env scripts/backup.js",
     "restore": "node --env-file-if-exists=.env scripts/restore.js",
+    "workflow:install": "node scripts/tracking.js install",
+    "workflow:check": "node scripts/tracking.js check",
+    "workflow:append": "node scripts/tracking.js append-draft",
     "test": "node --test"
   },
   "dependencies": {

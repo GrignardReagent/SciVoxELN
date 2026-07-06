@@ -48,6 +48,20 @@ services:
     command: tunnel --no-autoupdate --url http://scivox:3000
     restart: unless-stopped
 
+  # Stable custom-domain tunnel for restrictive networks such as campus Wi-Fi.
+  # Create a named Cloudflare Tunnel in the Cloudflare dashboard, publish your
+  # hostname to http://scivox:3000, paste the tunnel token into .env as
+  # CLOUDFLARED_TOKEN, then run:
+  #   docker compose --profile tunnel up -d --build
+  named-tunnel:
+    image: cloudflare/cloudflared:latest
+    container_name: scivox-named-tunnel
+    profiles: ["tunnel"]
+    depends_on:
+      - scivox
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARED_TOKEN:-}
+    restart: unless-stopped
+
   # Permanent-domain HTTPS endpoint. Point DNS at this server, set DOMAIN and
   # BASE_URL=https://DOMAIN in .env, then run:
   #   docker compose --profile public up -d --build

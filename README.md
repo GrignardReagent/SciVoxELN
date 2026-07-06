@@ -95,6 +95,67 @@ https://<printed-tunnel-host>/api/auth/oauth/github/callback
 https://<printed-tunnel-host>/api/auth/oauth/wechat/callback
 ```
 
+### Stable custom-domain tunnel
+
+For university Wi-Fi or other networks where inbound ports are blocked, use a
+named Cloudflare Tunnel. This keeps the outbound-only tunnel behavior of the
+prototype profile, but gives you a stable hostname.
+
+Prerequisite: use a domain whose DNS zone is in your Cloudflare account. A
+DuckDNS subdomain such as `scivoxeln.duckdns.org` is useful for dynamic IP
+hosting, but it is not a Cloudflare DNS zone you control, so it cannot be the
+stable hostname for this named-tunnel profile.
+
+1. Add your domain to Cloudflare DNS, or use a free/low-cost domain that can be
+   delegated to Cloudflare nameservers.
+2. In Cloudflare Zero Trust, create a Cloudflare Tunnel:
+   - Type: `cloudflared`
+   - Name: `scivoxeln`
+   - Connector environment: `Docker`
+3. In the tunnel's public hostname settings, add:
+
+```text
+Subdomain: scivoxeln
+Domain: your-domain.example
+Path: blank
+Service type: HTTP
+Service URL: scivox:3000
+```
+
+4. Copy the Docker connector token from Cloudflare and set `.env`:
+
+```bash
+BASE_URL=https://scivoxeln.your-domain.example
+COOKIE_SECURE=true
+TRUST_PROXY=1
+FORCE_HTTPS=true
+CLOUDFLARED_TOKEN=<cloudflare-tunnel-token>
+SESSION_SECRET=<long-random-secret>
+ADMIN_EMAILS=you@lab.org
+```
+
+5. Stop temporary/public-domain endpoints and start the named tunnel:
+
+```bash
+docker compose stop prototype-tunnel caddy
+docker compose --profile tunnel up -d --build
+```
+
+6. Check the connector and app:
+
+```bash
+docker compose logs -f named-tunnel
+curl https://scivoxeln.your-domain.example/api/health
+```
+
+For OAuth, register callbacks against the stable hostname:
+
+```text
+https://scivoxeln.your-domain.example/api/auth/oauth/google/callback
+https://scivoxeln.your-domain.example/api/auth/oauth/github/callback
+https://scivoxeln.your-domain.example/api/auth/oauth/wechat/callback
+```
+
 ### Permanent domain deployment
 
 Later, when you have a real domain, use the bundled Caddy profile:
@@ -346,6 +407,38 @@ public/
 Dockerfile, docker-compose.yml, .env.example
 deploy/Caddyfile      Optional public HTTPS reverse proxy profile
 ```
+
+---
+
+## Developer workflow
+
+`TRACKING.md` is the single source of truth for active tasks, backlog, done
+work, change log, and historical session notes.
+
+Install the repo-local commit hook once per clone:
+
+```bash
+npm run workflow:install
+```
+
+When staged code/config/docs changes do not include a staged `TRACKING.md`
+update, the pre-commit hook appends a draft Change Log entry from the staged
+file list and blocks the commit. Review the draft, replace the generated summary
+with a real one, stage `TRACKING.md`, and commit again.
+
+Useful commands:
+
+```bash
+npm run workflow:check
+npm run workflow:append
+```
+
+Team conventions:
+
+- Task IDs: `SVX-001`, `SVX-002`, ...
+- Branches: `svx-001-short-description`
+- Every meaningful change gets one `Change Log` entry.
+- Move tasks between Active Tasks, Backlog, and Done when status changes.
 
 ---
 

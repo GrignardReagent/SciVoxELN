@@ -3,9 +3,10 @@
 Guidance for AI assistants (and humans) working in this repo. Read this before
 making changes.
 
-> **Progress log:** read `PROGRESS.md` at the start of a session and update it at
-> the end (dated Session-log entry; move items between Done / In progress /
-> Backlog). It's the source of truth for what's done vs. outstanding.
+> **Team tracking:** read `TRACKING.md` at the start of a session and update it
+> before finishing whenever code, config, docs, or deployment state changes. It
+> is the source of truth for active tasks, backlog, done work, change log, and
+> historical session notes.
 
 ## What this is
 
@@ -112,6 +113,13 @@ compliance/on-prem angle (clean rooms, classified data, 21 CFR Part 11 / GxP).
   leave `BASE_URL` blank, run `docker compose --profile prototype up -d --build`,
   then copy the `https://*.trycloudflare.com` URL from
   `docker compose logs -f prototype-tunnel`.
+- Stable custom-domain deployment on restrictive networks (e.g. university
+  Wi-Fi) uses the Docker Compose `tunnel` profile with a named Cloudflare Tunnel:
+  the hostname must live in a DNS zone managed by Cloudflare, the Cloudflare
+  public hostname points to `http://scivox:3000`, `.env` contains
+  `BASE_URL=https://HOSTNAME`, `COOKIE_SECURE=true`, `TRUST_PROXY=1`,
+  `FORCE_HTTPS=true`, and `CLOUDFLARED_TOKEN`, then run
+  `docker compose --profile tunnel up -d --build`.
 - Permanent-domain deployment uses the Docker Compose `public` profile with
   Caddy (`deploy/Caddyfile`): set `DOMAIN`, `BASE_URL=https://DOMAIN`,
   `COOKIE_SECURE=true`, `TRUST_PROXY=1`, `FORCE_HTTPS=true`, and a real
@@ -164,5 +172,3 @@ plan start → audit CSV. Frontend voice/OCR need a real browser.
 - LIMS/instrument connectors and scheduled on-prem→cloud sync (from the pitch).
 - Per-project inventory scoping (inventory is currently instance-wide).
 - GPU Whisper option / model tuning (base model wired; see docker-compose.yml).
-- `SciVox-ELN.html` at the repo root is the original standalone single-file
-  prototype — kept for reference, gitignored, not part of the app.
