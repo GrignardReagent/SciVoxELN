@@ -28,6 +28,7 @@ const now = () => new Date().toISOString();
 const id = () => randomUUID();
 const DEFAULT_ORG_SLUG = 'default';
 const DEFAULT_PROJECT_SLUG = 'general-r-and-d';
+export const HIDDEN_ENTRY_TYPES = new Set(['voice_transcript']);
 
 export const PROJECT_ROLES = { viewer: 1, scientist: 2, reviewer: 3, owner: 4 };
 
@@ -63,6 +64,10 @@ function parseJsonArray(value) {
 
 function cleanEntryIds(values) {
   return Array.from(new Set((Array.isArray(values) ? values : []).map(String).filter(Boolean))).slice(0, 40);
+}
+
+export function isHiddenEntryType(type) {
+  return HIDDEN_ENTRY_TYPES.has(String(type || ''));
 }
 
 /* ------------------------------------------------------------------ */
@@ -526,7 +531,7 @@ export const Audit = {
 /* ------------------------------------------------------------------ */
 function withProjectRows(base, user, order = 'e.created_at DESC') {
   const select = `SELECT e.*, p.name AS project_name, p.org_id AS org_id, o.name AS org_name,
-    (SELECT COUNT(*) FROM entries en WHERE en.experiment_id=e.id AND en.deleted_at IS NULL) AS entryCount
+    (SELECT COUNT(*) FROM entries en WHERE en.experiment_id=e.id AND en.deleted_at IS NULL AND en.type NOT IN ('voice_transcript')) AS entryCount
     FROM experiments e LEFT JOIN projects p ON p.id=e.project_id LEFT JOIN orgs o ON o.id=p.org_id`;
   if (user?.role === 'admin') return db.prepare(`${select} ${base} ORDER BY ${order}`).all();
   const ids = Projects.idsForUser(user);
@@ -583,7 +588,7 @@ export const Entries = {
       JOIN experiments e ON e.id=en.experiment_id
       LEFT JOIN projects p ON p.id=e.project_id
       LEFT JOIN orgs o ON o.id=p.org_id
-      WHERE en.deleted_at IS NULL`;
+      WHERE en.deleted_at IS NULL AND en.type NOT IN ('voice_transcript')`;
     if (user?.role === 'admin') return db.prepare(`${select} ORDER BY en.created_at DESC`).all();
     const ids = Projects.idsForUser(user);
     if (!ids.length) return [];
@@ -851,7 +856,7 @@ export const Search = {
 
     const entryRows = db.prepare(`SELECT en.*, e.title AS experiment_title, e.project_id, p.name AS project_name
       FROM entries en JOIN experiments e ON e.id=en.experiment_id LEFT JOIN projects p ON p.id=e.project_id
-      ${expFilter ? expFilter + ' AND' : 'WHERE'} en.deleted_at IS NULL`).all(...args);
+      ${expFilter ? expFilter + ' AND' : 'WHERE'} en.deleted_at IS NULL AND en.type NOT IN ('voice_transcript')`).all(...args);
     const entries = entryRows
       .map(en => ({ ...en, score: scoreText([en.experiment_title, en.project_name, en.type, en.text].join(' '), terms, { title: en.experiment_title }) }))
       .filter(en => en.score > 0)

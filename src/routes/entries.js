@@ -24,6 +24,7 @@ r.patch('/:id', (req, res) => {
   if (!Projects.canAccessProject(req.user, exp.project_id, 'scientist')) return res.status(403).json({ error: 'Project write access required' });
   if (exp.status === 'locked') return res.status(409).json({ error: 'Experiment is locked (read-only)' });
   if (en.signed_by) return res.status(409).json({ error: 'Signed entries cannot be edited' });
+  if (en.type === 'voice_transcript') return res.status(409).json({ error: 'Voice source transcripts cannot be edited' });
   const text = String(req.body?.text || '').trim();
   if (!text) return res.status(400).json({ error: 'Entry text is required' });
   const updated = Entries.update(req.params.id, { text });

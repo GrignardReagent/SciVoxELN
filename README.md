@@ -279,6 +279,15 @@ The composer prefers the browser Web Speech API when available, because it
 shows interim text while you speak. Server STT is the fallback for browsers or
 phones that cannot provide live dictation.
 
+Voice entries now keep capture and notebook text separate. The live/raw
+transcript is collected in a source transcript panel while you can type brief
+manual notes. When `OPENAI_API_KEY` is configured, stopping dictation calls
+`POST /api/ai/process-voice-draft` to generate an editable numbered-bullet or
+concise-paragraph draft. Saving the polished draft writes a visible `voice`
+entry and a linked hidden `voice_transcript` source entry for audit/export
+provenance. If AI is not configured, you can still save the raw transcript as a
+normal voice entry.
+
 `STT_PROVIDER` selects that server fallback:
 
 - **`webspeech`** — the browser's Web Speech API. Live text, no server

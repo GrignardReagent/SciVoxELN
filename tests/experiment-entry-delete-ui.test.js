@@ -26,3 +26,20 @@ test('experiment detail renders an admin-gated delete button wired to a reasoned
   assert.match(source, /Deletion reason required/);
   assert.match(source, /api\.deleteExperiment\(exp\.id,\s*\{\s*reason\s*\}\)/);
 });
+
+test('voice composer separates source transcript from polished notebook draft', () => {
+  assert.match(source, /id="voiceManualNotes"/);
+  assert.match(source, /id="voiceTranscript"/);
+  assert.match(source, /id="voicePolished"/);
+  assert.match(source, /data-voice-style="numbered_bullets"/);
+  assert.match(source, /data-voice-style="concise_paragraph"/);
+  assert.match(source, /api\.processVoiceDraft/);
+  assert.match(source, /type:\s*'voice_transcript'/);
+  assert.match(source, /sourceEntryIds:\s*\[rawEntry\.id\]/);
+});
+
+test('source transcript links fetch hidden source entries into a modal', () => {
+  assert.match(source, /openSourceEntryModal/);
+  assert.match(source, /api\.entry\(btn\.dataset\.sourceEntry\)/);
+  assert.match(source, /Source transcript/);
+});

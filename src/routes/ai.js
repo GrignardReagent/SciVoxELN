@@ -10,7 +10,7 @@
  * OPENAI_VISION_MODEL (optional; defaults to OPENAI_MODEL).
  */
 import { Router } from 'express';
-import { Entries, Experiments, Audit } from '../db.js';
+import { Entries, Experiments, Audit, Projects, isHiddenEntryType } from '../db.js';
 
 const r = Router();
 const MODEL = process.env.OPENAI_MODEL || 'gpt-5.5';
@@ -20,6 +20,69 @@ const API_URL = `${BASE}/chat/completions`;
 const configured = () => !!process.env.OPENAI_API_KEY;
 
 r.get('/health', (_req, res) => res.json({ configured: configured(), model: MODEL, visionModel: VISION_MODEL }));
+
+r.post('/process-voice-draft', async (req, res) => {
+  if (!configured()) return res.status(501).json({ error: 'AI assistant is not configured (set OPENAI_API_KEY).' });
+
+  const experimentId = String(req.body?.experimentId || '');
+  const transcript = compactSpaces(req.body?.transcript || '').slice(0, 16000);
+  const manualNotes = compactSpaces(req.body?.manualNotes || '').slice(0, 6000);
+  const style = req.body?.style === 'concise_paragraph' ? 'concise_paragraph' : 'numbered_bullets';
+  if (!experimentId) return res.status(400).json({ error: 'experimentId required' });
+  if (!transcript && !manualNotes) return res.status(400).json({ error: 'transcript or manualNotes required' });
+
+  const exp = Experiments.get(experimentId, req.user);
+  if (!exp) return res.status(404).json({ error: 'Experiment not found' });
+  if (!Projects.canAccessProject(req.user, exp.project_id, 'scientist')) return res.status(403).json({ error: 'Project write access required' });
+  if (exp.status === 'locked') return res.status(409).json({ error: 'Experiment is locked (read-only)' });
+
+  const system = {
+    role: 'system',
+    content:
+      'You are SciVox Assistant, polishing a dictated laboratory notebook draft for a regulated Electronic Lab Notebook. ' +
+      'Use only the supplied transcript and manual notes. Do not invent reagent names, measurements, sample IDs, results, conclusions, or rationale. ' +
+      'Preserve exact units, concentrations, temperatures, times, pH values, lot numbers, and sample identifiers. ' +
+      'If a detail is unclear, write that it was unclear instead of guessing. Return plain text only.'
+  };
+  const user = {
+    role: 'user',
+    content: [
+      `style: ${style}`,
+      style === 'numbered_bullets'
+        ? 'Return 3 to 7 numbered points, each as "1. ...", concise and suitable as the visible notebook entry.'
+        : 'Return 1 to 2 concise paragraphs suitable as the visible notebook entry.',
+      'Manual notes should guide what matters most, but transcript facts remain the source evidence.',
+      '',
+      `Experiment: ${exp.title}`,
+      `Objective: ${exp.objective || 'not set'}`,
+      '',
+      `Manual notes:\n${manualNotes || '(none)'}`,
+      '',
+      `Source transcript:\n${transcript || '(none)'}`
+    ].join('\n')
+  };
+
+  try {
+    const resp = await fetch(API_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
+      body: JSON.stringify({ model: MODEL, messages: [system, user], max_completion_tokens: 520 })
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      const msg = data?.error?.message || `OpenAI error ${resp.status}`;
+      return res.status(502).json({ error: msg });
+    }
+    const rawOutput = data?.choices?.[0]?.message?.content?.trim() || '';
+    const output = normalizeVoiceDraftOutput(rawOutput, style);
+    Audit.log(req.user.name, req.user.role, 'AI_POLISH_VOICE_DRAFT',
+      `${style} for "${exp.title}" | transcript words ${countWords(transcript)} | manual note words ${countWords(manualNotes)}`,
+      { projectId: exp.project_id });
+    res.json({ style, output, model: MODEL, experimentId: exp.id });
+  } catch (e) {
+    res.status(502).json({ error: 'AI request failed: ' + e.message });
+  }
+});
 
 r.post('/chat', async (req, res) => {
   if (!configured()) return res.status(501).json({ error: 'AI assistant is not configured (set OPENAI_API_KEY).' });
@@ -32,7 +95,7 @@ r.post('/chat', async (req, res) => {
   const exp = experimentId ? Experiments.get(experimentId, req.user) : null;
   if (experimentId && !exp) return res.status(404).json({ error: 'Experiment not found' });
   if (exp) {
-    const entries = (exp.entries || []).slice(-12)
+    const entries = (exp.entries || []).filter(e => !isHiddenEntryType(e.type)).slice(-12)
       .map(e => `- [${e.type}${e.signed_by ? ', signed' : ''}] ${e.text}`).join('\n').slice(0, 4000);
     context = [
       `Title: ${exp.title}`,
@@ -240,6 +303,41 @@ function parseObservation(raw) {
 
 function countWords(text) {
   return String(text || '').trim().split(/\s+/).filter(Boolean).length;
+}
+
+function compactSpaces(text) {
+  return String(text || '').replace(/[ \t]+/g, ' ').replace(/\s*\n+\s*/g, '\n').trim();
+}
+
+function normalizeVoiceDraftOutput(raw, style) {
+  const cleaned = stripMarkdown(raw).replace(/\r/g, '').trim();
+  if (style === 'concise_paragraph') {
+    return takeWords(cleaned
+      .split(/\n+/)
+      .map(line => line.replace(/^\d+[\).:-]\s*/, '').trim())
+      .filter(Boolean)
+      .join(' '), 180);
+  }
+  return applyNumberedVoiceTemplate(cleaned);
+}
+
+function applyNumberedVoiceTemplate(raw) {
+  const fromLines = raw.split(/\n+/)
+    .map(line => line.trim())
+    .filter(Boolean);
+  const candidates = (fromLines.length > 1 ? fromLines : splitSentences(raw))
+    .map(line => line
+      .replace(/^\d+[\).:-]\s*/, '')
+      .replace(/^-+\s*/, '')
+      .trim())
+    .filter(line => line && !/^[A-Z][A-Za-z\s]{0,40}:$/.test(line))
+    .slice(0, 7);
+  if (!candidates.length) candidates.push('No source-backed voice note was generated.');
+  return candidates.map((line, index) => `${index + 1}. ${takeWords(line, 28).replace(/\.$/, '')}.`).join('\n');
+}
+
+function splitSentences(text) {
+  return String(text || '').split(/(?<=[.!?])\s+/).map(s => s.trim()).filter(Boolean);
 }
 
 function normalizeProcessedOutput(raw, mode, { summaryWordLimit }) {

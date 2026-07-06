@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { Audit, Entries, ExperimentExports, Experiments, Projects, Refs, fingerprint } from '../db.js';
+import { Audit, Entries, ExperimentExports, Experiments, Projects, Refs, fingerprint, isHiddenEntryType } from '../db.js';
 import { requireRole } from '../auth.js';
 
 const r = Router();
@@ -9,7 +9,7 @@ r.get('/', (req, res) => res.json(Experiments.list(req.user)));
 r.get('/:id', (req, res) => {
   const exp = Experiments.get(req.params.id, req.user);
   if (!exp) return res.status(404).json({ error: 'Experiment not found' });
-  res.json(exp);
+  res.json(publicExperiment(exp));
 });
 
 r.post('/', (req, res) => {
@@ -128,6 +128,10 @@ r.post('/:id/entries', (req, res) => {
     Audit.log(req.user.name, req.user.role, 'ADD_FIGURE_ENTRY',
       `attached figure to "${exp.title}" (entry ${entry.id}) | raw ${entry.raw_image_url || 'none'} | clean ${entry.clean_image_url || entry.image_url || 'none'}`,
       { projectId: exp.project_id });
+  } else if (entry.type === 'voice_transcript') {
+    Audit.log(req.user.name, req.user.role, 'ADD_VOICE_TRANSCRIPT_SOURCE',
+      `created voice transcript source ${entry.id} in "${exp.title}" | words ${countWords(text)} | hash ${entry.hash}`,
+      { projectId: exp.project_id });
   } else {
     Audit.log(req.user.name, req.user.role, 'ADD_ENTRY', `${entry.type} entry in "${exp.title}"`, { projectId: exp.project_id });
   }
@@ -136,9 +140,17 @@ r.post('/:id/entries', (req, res) => {
 
 export default r;
 
+function publicExperiment(exp) {
+  return { ...exp, entries: (exp.entries || []).filter(en => !isHiddenEntryType(en.type)) };
+}
+
 function auditText(text, max = 3000) {
   const clean = String(text || '').trim();
   return clean.length > max ? clean.slice(0, max - 1) + '…' : clean;
+}
+
+function countWords(text) {
+  return String(text || '').trim().split(/\s+/).filter(Boolean).length;
 }
 
 function safeName(name) {

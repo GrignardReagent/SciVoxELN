@@ -55,6 +55,7 @@ export const api = {
   addEntry: (id, d) => req('POST', `/api/experiments/${id}/entries`, d),
   // entries
   entries: () => req('GET', '/api/entries'),
+  entry: id => req('GET', `/api/entries/${id}`),
   updateEntry: (id, d) => req('PATCH', `/api/entries/${id}`, d),
   signEntry: (id, d = {}) => req('POST', `/api/entries/${id}/sign`, d),
   deleteEntry: (id, d) => req('DELETE', `/api/entries/${id}`, d),
@@ -79,6 +80,8 @@ export const api = {
   aiHealth: () => req('GET', '/api/ai/health'),
   aiChat: (experimentId, messages) => req('POST', '/api/ai/chat', { experimentId, messages }),
   processEntries: (entryIds, mode) => req('POST', '/api/ai/process-entries', { entryIds, mode }),
+  processVoiceDraft: (experimentId, transcript, manualNotes, style) =>
+    req('POST', '/api/ai/process-voice-draft', { experimentId, transcript, manualNotes, style }),
   observeFrame: (experimentId, imageData, transcript, recentEvents) =>
     req('POST', '/api/ai/observe', { experimentId, imageData, transcript, recentEvents }),
   // references (papers)

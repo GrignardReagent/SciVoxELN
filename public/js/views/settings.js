@@ -34,7 +34,7 @@ export const renderSettings = guard(async (root, ctx) => {
 
           <h2 class="sec-t" style="margin-top:20px">Voice transcription</h2>
           <p class="muted" style="font-size:13px;margin-top:0">Live dictation uses browser Web Speech when available. Server fallback: <b>${esc(stt.provider)}</b>${stt.serverStt ? ' ready' : ' off'}.</p>
-          <div class="hint" style="margin-top:0">Supported browsers show text while you speak. Phones or browsers without live dictation can fall back to server transcription (<code>auto</code>, <code>openai</code>, or <code>whisper</code>), which records first and transcribes on Stop.</div>
+          <div class="hint" style="margin-top:0">Voice capture keeps the raw transcript as source evidence. When AI is configured, Stop creates an editable polished draft before Save; otherwise the raw transcript can be saved directly.</div>
         </div>
 
         <div class="card">

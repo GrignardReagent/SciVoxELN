@@ -2,19 +2,24 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
 test('MVP pilot workflow: projects, access, signatures, exports, audit and session revocation', async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'scivox-mvp-'));
+  const ai = await mockOpenAI();
   Object.assign(process.env, {
     DATA_DIR: tmp,
     SEED: 'false',
     SESSION_SECRET: 'test-secret-for-mvp-api',
     COOKIE_SECURE: 'false',
     SCIVOX_NO_LISTEN: 'true',
-    NODE_NO_WARNINGS: '1'
+    NODE_NO_WARNINGS: '1',
+    OPENAI_API_KEY: 'test-openai-key',
+    OPENAI_BASE_URL: ai.baseUrl,
+    OPENAI_MODEL: 'mock-gpt'
   });
   const { app } = await import(`../src/index.js?mvp=${Date.now()}`);
   const server = await listen(app);
@@ -61,6 +66,15 @@ test('MVP pilot workflow: projects, access, signatures, exports, audit and sessi
       () => scientist.req(base, 'POST', `/api/experiments/${exp.id}/entries`, { type: 'note', text: 'viewer cannot write' }),
       /403/
     );
+    await assert.rejects(
+      () => scientist.req(base, 'POST', '/api/ai/process-voice-draft', {
+        experimentId: exp.id,
+        transcript: 'Viewer should not polish voice drafts.',
+        manualNotes: '',
+        style: 'numbered_bullets'
+      }),
+      /403/
+    );
 
     await admin.req(base, 'PATCH', `/api/projects/${project.id}/members`, {
       email: 'sci@biotech.test',
@@ -99,9 +113,49 @@ test('MVP pilot workflow: projects, access, signatures, exports, audit and sessi
     assert.equal(libraryEntry.project_id, project.id);
     assert.equal(entries.some(e => e.id === generated.id), false);
 
+    const bulletDraft = await scientist.req(base, 'POST', '/api/ai/process-voice-draft', {
+      experimentId: exp.id,
+      transcript: 'Added 5 mL buffer to sample A1 and incubated at 37 C for 15 minutes.',
+      manualNotes: 'Important: A1 looked cloudy after incubation.',
+      style: 'numbered_bullets'
+    });
+    assert.equal(bulletDraft.style, 'numbered_bullets');
+    assert.equal(bulletDraft.model, 'mock-gpt');
+    assert.match(bulletDraft.output, /^1\. Added 5 mL buffer to sample A1\./);
+    assert.match(bulletDraft.output, /\n2\. Incubated at 37 C for 15 minutes\./);
+    assert.doesNotMatch(bulletDraft.output, /^-/m);
+
+    const paragraphDraft = await scientist.req(base, 'POST', '/api/ai/process-voice-draft', {
+      experimentId: exp.id,
+      transcript: 'Measured pH 7.4 and stored tube B2 on ice.',
+      manualNotes: '',
+      style: 'concise_paragraph'
+    });
+    assert.equal(paragraphDraft.style, 'concise_paragraph');
+    assert.match(paragraphDraft.output, /^Measured pH 7\.4 and stored tube B2 on ice\./);
+    assert.doesNotMatch(paragraphDraft.output, /^\d+\./m);
+
+    const rawVoice = await scientist.req(base, 'POST', `/api/experiments/${exp.id}/entries`, {
+      type: 'voice_transcript',
+      text: 'Manual notes:\nA1 looked cloudy.\n\nSource transcript:\nAdded confidential phrase XYZ-123 and incubated sample A1.'
+    });
+    assert.equal(rawVoice.type, 'voice_transcript');
+    const polishedVoice = await scientist.req(base, 'POST', `/api/experiments/${exp.id}/entries`, {
+      type: 'voice',
+      text: bulletDraft.output,
+      sourceEntryIds: [rawVoice.id]
+    });
+    assert.deepEqual(JSON.parse(polishedVoice.source_entry_ids), [rawVoice.id]);
+    const expWithVoice = await scientist.req(base, 'GET', `/api/experiments/${exp.id}`);
+    assert.equal(expWithVoice.entries.some(en => en.id === rawVoice.id), false);
+    assert.equal(expWithVoice.entries.some(en => en.id === polishedVoice.id), true);
+    const libraryAfterVoice = await scientist.req(base, 'GET', '/api/entries');
+    assert.equal(libraryAfterVoice.some(en => en.id === rawVoice.id), false);
+    const sourceTranscript = await scientist.req(base, 'GET', `/api/entries/${rawVoice.id}`);
+    assert.equal(sourceTranscript.text, rawVoice.text);
     await assert.rejects(
-      () => scientist.req(base, 'POST', '/api/ai/process-entries', { entryIds: [entry.id], mode: 'summary' }),
-      /501/
+      () => scientist.req(base, 'PATCH', `/api/entries/${rawVoice.id}`, { text: 'tampered source transcript' }),
+      /409/
     );
 
     const rawUpload = await scientist.uploadImage(base, tinyPng(), 'raw-slide-sketch.png', 'figure-raw', exp.id);
@@ -177,10 +231,15 @@ test('MVP pilot workflow: projects, access, signatures, exports, audit and sessi
       () => scientist.req(base, 'POST', `/api/experiments/${exp.id}/entries`, { type: 'note', text: 'after lock' }),
       /409/
     );
+    await assert.rejects(
+      () => scientist.req(base, 'POST', `/api/experiments/${exp.id}/entries`, { type: 'voice_transcript', text: 'after lock transcript' }),
+      /409/
+    );
 
     const exported = await admin.req(base, 'GET', `/api/experiments/${exp.id}/export`);
     assert.equal(exported.experiment.id, exp.id);
     assert.match(exported.integrity.sha256, /^[a-f0-9]{64}$/);
+    assert.ok(exported.experiment.entries.some(en => en.id === rawVoice.id));
     const exportedPdf = await admin.raw(base, 'GET', `/api/experiments/${exp.id}/export?format=pdf`);
     assert.equal(exportedPdf.status, 200);
     assert.match(exportedPdf.headers['content-type'], /application\/pdf/);
@@ -191,6 +250,10 @@ test('MVP pilot workflow: projects, access, signatures, exports, audit and sessi
     const audit = await admin.req(base, 'GET', `/api/audit?project=${project.id}`);
     assert.ok(audit.some(a => a.action === 'SIGN_ENTRY'));
     assert.ok(audit.some(a => a.action === 'ADD_FIGURE_ENTRY'));
+    assert.ok(audit.some(a => a.action === 'AI_POLISH_VOICE_DRAFT' && a.detail.includes('numbered_bullets')));
+    assert.ok(audit.some(a => a.action === 'AI_POLISH_VOICE_DRAFT' && a.detail.includes('concise_paragraph')));
+    assert.ok(audit.some(a => a.action === 'ADD_VOICE_TRANSCRIPT_SOURCE' && a.detail.includes(rawVoice.id)));
+    assert.equal(audit.some(a => a.detail.includes('confidential phrase XYZ-123')), false);
     assert.ok(audit.some(a =>
       a.action === 'DELETE_ENTRY' &&
       a.detail.includes(singleDeleteEntry.id) &&
@@ -213,6 +276,7 @@ test('MVP pilot workflow: projects, access, signatures, exports, audit and sessi
     await assert.rejects(() => scientist.req(base, 'GET', '/api/experiments'), /401/);
   } finally {
     await new Promise(resolve => server.close(resolve));
+    await new Promise(resolve => ai.server.close(resolve));
   }
 });
 
@@ -351,6 +415,32 @@ function tinyPng() {
 function listen(app) {
   return new Promise((resolve, reject) => {
     const server = app.listen(0, '0.0.0.0', () => resolve(server));
+    server.on('error', reject);
+  });
+}
+
+function mockOpenAI() {
+  const server = http.createServer(async (req, res) => {
+    if (req.method !== 'POST' || req.url !== '/chat/completions') {
+      res.writeHead(404, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: { message: 'not found' } }));
+      return;
+    }
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    const payload = JSON.parse(body || '{}');
+    const userText = payload.messages?.map(m => m.content).join('\n') || '';
+    const content = userText.includes('concise_paragraph')
+      ? 'Measured pH 7.4 and stored tube B2 on ice. No additional result was stated.'
+      : ['Added 5 mL buffer to sample A1.', 'Incubated at 37 C for 15 minutes.', 'A1 looked cloudy after incubation.'].map((line, i) => `${i + 1}. ${line}`).join('\n');
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ choices: [{ message: { content } }] }));
+  });
+  return new Promise((resolve, reject) => {
+    server.listen(0, '127.0.0.1', () => {
+      const { port } = server.address();
+      resolve({ server, baseUrl: `http://127.0.0.1:${port}` });
+    });
     server.on('error', reject);
   });
 }

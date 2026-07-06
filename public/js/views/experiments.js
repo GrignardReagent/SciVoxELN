@@ -433,13 +433,28 @@ function wireEditEntries(root, ctx, expId) {
 }
 
 function wireSourceLinks(root) {
-  root.querySelectorAll('[data-source-entry]').forEach(btn => btn.onclick = () => {
+  root.querySelectorAll('[data-source-entry]').forEach(btn => btn.onclick = guard(async () => {
     const target = root.querySelector(`#entry-${CSS.escape(btn.dataset.sourceEntry)}`);
-    if (!target) return toast('Source note is not visible here', true);
+    if (!target) return openSourceEntryModal(btn);
     target.scrollIntoView({ behavior: 'smooth', block: 'center' });
     target.classList.add('entry-focus');
     setTimeout(() => target.classList.remove('entry-focus'), 1400);
-  });
+  }));
+}
+
+async function openSourceEntryModal(btn) {
+  const en = await api.entry(btn.dataset.sourceEntry);
+  const isTranscript = en.type === 'voice_transcript';
+  modal(`<div class="between">
+      <h3>${isTranscript ? 'Source transcript' : 'Source entry'}</h3>
+      <span class="pill">${esc(en.type || 'entry')}</span>
+    </div>
+    <textarea class="txt" readonly style="min-height:260px">${esc(en.text || '')}</textarea>
+    <div class="hashline">fingerprint ${esc(en.hash || '')}</div>
+    <div class="row" style="margin-top:16px;justify-content:flex-end">
+      <button class="btn ghost" data-x>Close</button>
+    </div>`);
+  document.getElementById('modal').querySelector('[data-x]').onclick = closeModal;
 }
 
 function wireSignButtons(root, ctx, expId) {
@@ -526,8 +541,11 @@ async function editExperimentModal(ctx, e) {
 /* --------------------------- Composer --------------------------- */
 async function mountComposer(mount, ctx, expId) {
   let capturedType = null, uploadedUrl = null;
+  let voiceTranscript = '', voiceStyle = 'numbered_bullets', polishedReady = false;
   let stt = { provider: 'webspeech', serverStt: false };
   try { stt = await api.sttHealth(); } catch {}
+  let aiConfigured = false, aiModel = 'AI';
+  try { const h = await api.aiHealth(); aiConfigured = !!h.configured; aiModel = h.model || 'AI'; } catch {}
   const serverStt = !!stt.serverStt;
   const useLiveSpeech = voiceSupported;
   const useRecorder = !useLiveSpeech && serverStt && recorderSupported;
@@ -549,7 +567,26 @@ async function mountComposer(mount, ctx, expId) {
         <input type="file" id="ocrFile" accept="image/*" style="display:none"/>
         <span class="pill" style="margin-left:auto">${voiceMode}</span>
       </div>
-      <textarea class="txt" id="composerText" placeholder="Type, dictate (Start voice), photograph a note (Camera), or upload a scan."></textarea>
+      <label class="fld">Notebook notes</label>
+      <textarea class="txt" id="voiceManualNotes" placeholder="Type notes, dictate in the background, photograph a note, or upload a scan."></textarea>
+      <details class="voice-source" id="voiceSourceWrap" style="display:none">
+        <summary>Source transcript <span class="muted" id="voiceTranscriptCount"></span></summary>
+        <textarea class="txt voice-transcript" id="voiceTranscript" readonly></textarea>
+      </details>
+      <div class="voice-polish" id="voicePolishWrap" style="display:none">
+        <div class="between">
+          <div class="row">
+            <button class="btn ghost sm on" type="button" data-voice-style="numbered_bullets">Numbered bullets</button>
+            <button class="btn ghost sm" type="button" data-voice-style="concise_paragraph">Concise paragraph</button>
+          </div>
+          <span class="pill">${esc(aiConfigured ? aiModel : 'AI off')}</span>
+        </div>
+        <label class="fld">Polished notebook draft</label>
+        <textarea class="txt" id="voicePolished"></textarea>
+        <div class="row" style="margin-top:8px">
+          <button class="btn sec sm" id="voiceRegenerate" type="button" ${aiConfigured ? '' : 'disabled'}>Regenerate</button>
+        </div>
+      </div>
       <div id="ocrPreview"></div>
       <div class="row" style="margin-top:10px">
         <button class="btn" id="saveEntry" type="button" disabled>Save entry</button>
@@ -558,11 +595,24 @@ async function mountComposer(mount, ctx, expId) {
       </div>
     </div>`;
 
-  const text = mount.querySelector('#composerText');
+  const text = mount.querySelector('#voiceManualNotes');
+  const transcriptEl = mount.querySelector('#voiceTranscript');
+  const transcriptWrap = mount.querySelector('#voiceSourceWrap');
+  const transcriptCount = mount.querySelector('#voiceTranscriptCount');
+  const polishWrap = mount.querySelector('#voicePolishWrap');
+  const polishedEl = mount.querySelector('#voicePolished');
+  const regenerateBtn = mount.querySelector('#voiceRegenerate');
   const saveBtn = mount.querySelector('#saveEntry');
   const stateEl = mount.querySelector('#composerState');
-  const upd = () => { saveBtn.disabled = !text.value.trim(); };
+  const upd = () => { saveBtn.disabled = !currentSaveText().trim(); };
   text.addEventListener('input', () => { upd(); if (!capturedType) capturedType = 'note'; });
+  polishedEl.addEventListener('input', () => { polishedReady = !!polishedEl.value.trim(); upd(); });
+  mount.querySelectorAll('[data-voice-style]').forEach(btn => btn.onclick = guard(async () => {
+    voiceStyle = btn.dataset.voiceStyle;
+    paintVoiceStyle();
+    if (voiceTranscript.trim()) await enhanceVoiceDraft();
+  }));
+  regenerateBtn.onclick = guard(enhanceVoiceDraft);
 
   const micStart = mount.querySelector('#micStart');
   const micPause = mount.querySelector('#micPause');
@@ -572,6 +622,47 @@ async function mountComposer(mount, ctx, expId) {
   function showRecording() { micStart.style.display = 'none'; micPause.style.display = ''; micStop.style.display = ''; micPause.textContent = '⏸ Pause'; micStart.classList.add('rec'); reclabel.classList.add('on'); reclabel.classList.remove('paused'); recword.textContent = 'Recording…'; }
   function showPaused() { micPause.textContent = '▶ Resume'; reclabel.classList.add('on', 'paused'); recword.textContent = 'Paused'; }
   function showIdle() { micStart.style.display = ''; micPause.style.display = 'none'; micStop.style.display = 'none'; micStart.classList.remove('rec'); reclabel.classList.remove('on', 'paused'); }
+  function paintVoiceStyle() {
+    mount.querySelectorAll('[data-voice-style]').forEach(btn => btn.classList.toggle('on', btn.dataset.voiceStyle === voiceStyle));
+  }
+  function setVoiceTranscript(value) {
+    voiceTranscript = String(value || '').trimStart();
+    transcriptEl.value = voiceTranscript;
+    transcriptWrap.style.display = voiceTranscript.trim() ? '' : 'none';
+    transcriptCount.textContent = voiceTranscript.trim() ? `${countWords(voiceTranscript)} words` : '';
+    upd();
+  }
+  async function afterVoiceStop() {
+    capturedType = 'voice';
+    if (!voiceTranscript.trim()) { stateEl.textContent = 'No speech detected'; upd(); return; }
+    if (aiConfigured) await enhanceVoiceDraft();
+    else { polishWrap.style.display = 'none'; stateEl.textContent = 'Voice captured — review & save raw transcript'; upd(); }
+  }
+  async function enhanceVoiceDraft() {
+    const transcript = voiceTranscript.trim();
+    const manualNotes = text.value.trim();
+    if (!transcript && !manualNotes) return;
+    if (!aiConfigured) { stateEl.textContent = 'AI polishing is not configured'; return; }
+    polishWrap.style.display = '';
+    polishedEl.disabled = true;
+    regenerateBtn.disabled = true;
+    stateEl.textContent = 'Polishing voice draft…';
+    try {
+      const res = await api.processVoiceDraft(expId, transcript, manualNotes, voiceStyle);
+      polishedEl.value = res.output || '';
+      polishedReady = !!polishedEl.value.trim();
+      stateEl.textContent = polishedReady ? 'Polished draft ready — review & save' : 'No polished draft returned';
+    } finally {
+      polishedEl.disabled = false;
+      regenerateBtn.disabled = false;
+      upd();
+    }
+  }
+  function currentSaveText() {
+    if (polishedReady && polishedEl.value.trim()) return polishedEl.value.trim();
+    if (voiceTranscript.trim()) return buildVoiceFallbackText(text.value, voiceTranscript);
+    return text.value.trim();
+  }
 
   if (useLiveSpeech) wireWebSpeech();
   else if (useRecorder) wireRecorder();
@@ -579,18 +670,18 @@ async function mountComposer(mount, ctx, expId) {
 
   function wireWebSpeech() {
     const voice = new VoiceController({
-      onText: t => { text.value = t; upd(); },
+      onText: t => { setVoiceTranscript(t); },
       onState: s => {
         if (s.startsWith('error')) { stateEl.textContent = 'Mic blocked — check permissions'; showIdle(); return; }
         capturedType = 'voice';
         if (s === 'recording') { showRecording(); stateEl.textContent = 'Listening… speak now'; }
         else if (s === 'paused') { showPaused(); stateEl.textContent = 'Paused — Resume or Stop'; }
-        else { showIdle(); stateEl.textContent = text.value ? 'Voice captured — review & save' : ''; }
+        else { showIdle(); }
       }
     });
-    micStart.onclick = () => voice.start(text.value);
+    micStart.onclick = () => { polishedReady = false; polishedEl.value = ''; polishWrap.style.display = 'none'; voice.start(voiceTranscript); };
     micPause.onclick = () => (voice.state === 'recording' ? voice.pause() : voice.resume());
-    micStop.onclick = () => voice.stop();
+    micStop.onclick = guard(async () => { voice.stop(); await afterVoiceStop(); });
     mount._voice = voice;
   }
   function wireVoiceUnavailable() {
@@ -611,7 +702,7 @@ async function mountComposer(mount, ctx, expId) {
     micStop.onclick = guard(async () => {
       showIdle(); stateEl.textContent = 'Transcribing…';
       const blob = await rec.stop(); if (!blob) { stateEl.textContent = ''; return; }
-      try { const { text: tx } = await api.transcribe(blob); text.value = (text.value ? text.value.trimEnd() + ' ' : '') + (tx || ''); upd(); stateEl.textContent = tx ? 'Transcribed — review & save' : 'No speech detected'; }
+      try { const { text: tx } = await api.transcribe(blob); setVoiceTranscript([voiceTranscript, tx || ''].filter(Boolean).join(' ')); stateEl.textContent = tx ? 'Transcribed' : 'No speech detected'; if (tx) await afterVoiceStop(); }
       catch (err) { stateEl.textContent = 'Transcription failed: ' + err.message; }
     });
   }
@@ -644,18 +735,44 @@ async function mountComposer(mount, ctx, expId) {
 
   /* ---- Save / clear ---- */
   mount.querySelector('#clearEntry').onclick = () => {
-    text.value = ''; capturedType = null; uploadedUrl = null;
+    text.value = ''; capturedType = null; uploadedUrl = null; polishedReady = false; polishedEl.value = ''; setVoiceTranscript('');
+    polishWrap.style.display = 'none';
     mount.querySelector('#ocrPreview').innerHTML = ''; stateEl.textContent = ''; upd();
     if (mount._voice && mount._voice.state !== 'idle') mount._voice.stop();
     if (mount._rec && mount._rec.state !== 'idle') mount._rec.stop();
     showIdle();
   };
   saveBtn.onclick = guard(async () => {
-    const val = text.value.trim(); if (!val) return;
+    const val = currentSaveText().trim(); if (!val) return;
     if (mount._voice && mount._voice.state !== 'idle') mount._voice.stop();
-    await api.addEntry(expId, { type: capturedType || 'note', text: val, imageUrl: uploadedUrl });
+    if (polishedReady && polishedEl.value.trim() && voiceTranscript.trim()) {
+      const rawEntry = await api.addEntry(expId, { type: 'voice_transcript', text: buildVoiceSourceText(text.value, voiceTranscript) });
+      await api.addEntry(expId, { type: 'voice', text: polishedEl.value.trim(), sourceEntryIds: [rawEntry.id] });
+    } else {
+      await api.addEntry(expId, { type: voiceTranscript.trim() ? 'voice' : (capturedType || 'note'), text: val, imageUrl: voiceTranscript.trim() ? null : uploadedUrl });
+    }
     toast('Entry saved & time-stamped'); ctx.go('experiments', { id: expId });
   });
+}
+
+function buildVoiceSourceText(manualNotes, transcript) {
+  return [
+    'Manual notes:',
+    String(manualNotes || '').trim() || '(none)',
+    '',
+    'Source transcript:',
+    String(transcript || '').trim()
+  ].join('\n');
+}
+
+function buildVoiceFallbackText(manualNotes, transcript) {
+  const notes = String(manualNotes || '').trim();
+  const source = String(transcript || '').trim();
+  return [notes, source].filter(Boolean).join(notes && source ? '\n\n' : '');
+}
+
+function countWords(text) {
+  return String(text || '').trim().split(/\s+/).filter(Boolean).length;
 }
 
 function entryImages(en) {

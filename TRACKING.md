@@ -74,7 +74,8 @@ and repo-native workflow tracking.
 
 - Core notebook: experiments, entries (note/voice/OCR), search, dashboard.
 - Voice entry with Start / Pause / Resume / Stop: Web Speech where supported,
-  plus mobile-safe server STT via OpenAI (`auto`/`openai`) or on-prem Whisper.
+  mobile-safe server STT via OpenAI (`auto`/`openai`) or on-prem Whisper, and
+  AI-polished drafts linked to hidden raw transcript source entries.
 - Observe run mode: mobile camera preview + live speech + action timeline, with
   optional OpenAI visual observations from periodic still frames.
 - OCR handwriting scan (Tesseract.js) via upload or live camera (rear camera on
@@ -142,6 +143,30 @@ and repo-native workflow tracking.
   non-admins.
 
 ## Change Log
+
+### 2026-07-06T21:34:00Z - Add polished voice drafts
+
+- Task: SVX-000
+- Branch: `master`
+- Summary: Reworked voice entry capture so raw dictation stays as hidden source
+  evidence while AI-polished numbered bullets or concise paragraphs become the
+  visible reviewed notebook entry.
+- Validation: Bundled Node `--test` passed with 13 tests; temporary Playwright
+  smoke verified mocked live dictation -> polished preview -> linked entry save
+  on desktop and mobile viewports.
+- Files:
+  - `TRACKING.md`
+  - `README.md`
+  - `public/css/styles.css`
+  - `public/js/api.js`
+  - `public/js/views/experiments.js`
+  - `public/js/views/settings.js`
+  - `src/db.js`
+  - `src/routes/ai.js`
+  - `src/routes/entries.js`
+  - `src/routes/experiments.js`
+  - `tests/experiment-entry-delete-ui.test.js`
+  - `tests/mvp-api.test.js`
 
 ### 2026-07-06T20:47:03Z - Add PDF export menu
 
