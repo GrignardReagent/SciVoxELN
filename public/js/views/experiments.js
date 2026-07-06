@@ -5,6 +5,7 @@ import { VoiceController, voiceSupported } from '../voice.js';
 import { Recorder, recorderSupported } from '../recorder.js';
 import { runOCR, fileToDataURL, cameraSupported, startCamera, stopCamera, captureFrame } from '../ocr.js';
 import { openObserverMode } from '../observer.js';
+import { openSketchFigureModal } from '../sketchpad.js';
 
 /* ----------------------------- List ----------------------------- */
 export const renderExperiments = guard(async (root, ctx) => {
@@ -273,6 +274,7 @@ function entryHTML(en, locked) {
     voice: '<span class="badge b-voice">🎙 Voice</span>',
     ocr: '<span class="badge b-ocr">📷 OCR</span>',
     observe: '<span class="badge b-observe">👁 Observe</span>',
+    figure: '<span class="badge b-figure">Figure</span>',
     note: '<span class="badge b-note">Note</span>'
   }[en.type] || '';
   const canSign = !en.signed_by && !locked && getUser();
@@ -283,7 +285,7 @@ function entryHTML(en, locked) {
       <span>· ${esc(en.author || 'Unknown')}${en.role ? ' (' + esc(en.role) + ')' : ''}</span>
       ${en.signed_by ? `<span class="badge b-sig">🔒 ${esc(en.signature_meaning || 'signed')} by ${esc(en.signed_by)}</span>` : ''}</div>
     <div class="body">${esc(en.text)}</div>
-    ${en.image_url ? `<img class="thumb" src="${esc(en.image_url)}" alt="scan"/>` : ''}
+    ${entryImages(en)}
     <div class="hashline">fingerprint ${en.hash}${en.signed_by ? ` · signed ${fmt(en.signed_at)} · sig ${en.sig}` : ''}</div>
     <div class="row" style="margin-top:8px">
       ${canSign ? `<button class="btn ok sm" data-sign="${en.id}">🔒 Sign &amp; lock entry</button>` : ''}
@@ -378,7 +380,8 @@ async function mountComposer(mount, ctx, expId) {
         <button class="btn sm danger" id="micStop" type="button" style="display:none">⏹ Stop</button>
         <button class="btn sm sec" id="ocrCam" type="button">📸 Camera</button>
         <button class="btn sm sec" id="ocrBtn" type="button">🖼 Upload scan</button>
-        <input type="file" id="ocrFile" accept="image/*" capture="environment" style="display:none"/>
+        <button class="btn sm sec" id="sketchBtn" type="button">Sketch figure</button>
+        <input type="file" id="ocrFile" accept="image/*" style="display:none"/>
         <span class="pill" style="margin-left:auto">${voiceMode}</span>
       </div>
       <textarea class="txt" id="composerText" placeholder="Type, dictate (Start voice), photograph a note (Camera), or upload a scan."></textarea>
@@ -472,6 +475,8 @@ async function mountComposer(mount, ctx, expId) {
   if (!cameraSupported) { camBtn.disabled = true; camBtn.title = 'Camera not available on this device/context (needs HTTPS)'; }
   else camBtn.onclick = () => openCamera(processOcr);
 
+  mount.querySelector('#sketchBtn').onclick = () => openSketchFigureModal({ id: expId }, () => ctx.go('experiments', { id: expId }));
+
   /* ---- Save / clear ---- */
   mount.querySelector('#clearEntry').onclick = () => {
     text.value = ''; capturedType = null; uploadedUrl = null;
@@ -486,6 +491,18 @@ async function mountComposer(mount, ctx, expId) {
     await api.addEntry(expId, { type: capturedType || 'note', text: val, imageUrl: uploadedUrl });
     toast('Entry saved & time-stamped'); ctx.go('experiments', { id: expId });
   });
+}
+
+function entryImages(en) {
+  if (en.type === 'figure') {
+    const clean = en.clean_image_url || en.image_url;
+    const raw = en.raw_image_url;
+    return `<div class="figure-entry">
+      ${clean ? `<figure><img class="figure-img" src="${esc(clean)}" alt="cleaned scientific diagram"/><figcaption>Clean diagram</figcaption></figure>` : ''}
+      ${raw ? `<figure><img class="figure-img raw" src="${esc(raw)}" alt="raw sketch"/><figcaption>Raw sketch</figcaption></figure>` : ''}
+    </div>`;
+  }
+  return en.image_url ? `<img class="thumb" src="${esc(en.image_url)}" alt="scan"/>` : '';
 }
 
 /* --------------------------- Camera modal --------------------------- */

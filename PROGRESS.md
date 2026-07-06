@@ -18,6 +18,9 @@ trail, self-hosted Whisper option, theming, mobile support, and MVP API tests.
 ## Done
 
 - Core notebook: experiments, entries (note/voice/OCR), search, dashboard.
+- Sketch-to-figure capture: mobile-friendly canvas sketchpad with a microscope
+  slide template, typed labels, raw sketch + cleaned diagram export, experiment-
+  scoped figure upload folders, figure notebook entries, and audit logging.
 - Voice entry with Start / Pause / Resume / Stop: Web Speech where supported,
   plus mobile-safe server STT via OpenAI (`auto`/`openai`) or on-prem Whisper.
 - Observe run mode: mobile camera preview + live speech + action timeline,
@@ -94,6 +97,48 @@ trail, self-hosted Whisper option, theming, mobile support, and MVP API tests.
 ---
 
 ## Session log
+
+### 2026-07-06 (sketch-to-figure branch)
+- Created branch `sketch-to-figure` for mobile scientific sketch capture.
+- Added a phone/tablet canvas sketchpad in the experiment composer with pen,
+  eraser, colour/width controls, typed label placement, a microscope slide
+  template, clean-preview rendering, and attach-to-experiment flow.
+- Refined label placement after mobile trial feedback: labels are now added
+  directly to the canvas, can be selected, dragged, updated and deleted.
+- Added a laptop-friendly label move mode, larger label hit targets, and clean
+  rendering that smooths freehand curves; intentional straight lines are locked
+  by holding at the stroke endpoint.
+- Extended hold-to-lock cleanup to simple geometric shapes: open strokes lock as
+  lines, while closed strokes can snap into rectangles, triangles, circles or
+  ellipses.
+- Improved phone hold detection by tolerating small touch jitter at the stroke
+  endpoint and shortening the lock delay.
+- Strengthened clean-preview smoothing for freehand strokes with resampling,
+  repeated weighted smoothing and a light curve-rounding pass.
+- Added a smoothing slider so clean-preview/saved-clean stroke smoothing can be
+  adjusted per sketch without changing the raw sketch.
+- Added local vector templates for synapse, microscope slide, cell, neuron, XY
+  axes plots and Y-axis experiment timelines; inserted templates can be undone
+  as a single action.
+- Added prompt-style template insertion with phrase matching, and simplified the
+  built-ins into minimal scaffolds intended for drawing/labeling on top.
+- Restyled prompt templates toward BioRender-like schematic scaffolds with
+  soft fills, crisp outlines and no default labels.
+- Refined biological templates so synapse, cell and neuron insertions read as
+  presynaptic/postsynaptic membrane scaffolds, organic cells and branched neurons.
+- Added imported-image underlays in the sketchpad: images are fitted faintly
+  behind the canvas so users can sketch on top, clear them, and include them in
+  raw/clean figure exports.
+- Changed OCR **Upload scan** on mobile to open the gallery/file picker; the
+  separate Camera button remains the direct camera capture path.
+- Added an undo control, with Cmd/Ctrl+Z support outside text fields, so
+  accidental strokes/templates can be removed as whole actions instead of
+  manually erased.
+- Added experiment-scoped figure upload paths under
+  `uploads/figures/{experimentId}/raw` and `/clean`; figure entries retain both
+  raw sketch and cleaned diagram URLs and render both in the notebook feed.
+- Added `ADD_FIGURE_ENTRY` audit logging and MVP API coverage for figure uploads,
+  attachment fields, and audit action. `npm test` passes.
 
 ### 2026-07-06 (MVP foundation implementation)
 - Implemented workspace/project foundations: `orgs`, `projects`,

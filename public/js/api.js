@@ -85,8 +85,10 @@ export const api = {
   importZotero: (experimentId, d) => req('POST', '/api/references/zotero', { experimentId, ...d }),
   deleteReference: id => req('DELETE', `/api/references/${id}`),
   // uploads
-  async uploadImage(file, filename) {
+  async uploadImage(file, filename, kind = '', experimentId = '') {
     const fd = new FormData();
+    if (kind) fd.append('kind', kind);
+    if (experimentId) fd.append('experimentId', experimentId);
     if (filename) fd.append('image', file, filename);
     else fd.append('image', file);
     const res = await fetch('/api/uploads', { method: 'POST', body: fd, credentials: 'same-origin' });

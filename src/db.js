@@ -147,6 +147,8 @@ export function migrate() {
       role              TEXT DEFAULT '',
       text              TEXT NOT NULL,
       image_url         TEXT,
+      raw_image_url     TEXT,
+      clean_image_url   TEXT,
       hash              TEXT NOT NULL,
       signed_by         TEXT,
       signed_role       TEXT,
@@ -235,6 +237,8 @@ export function migrate() {
   addColumn('entries', 'deleted_at', 'TEXT');
   addColumn('entries', 'deleted_by', 'TEXT');
   addColumn('entries', 'delete_reason', 'TEXT');
+  addColumn('entries', 'raw_image_url', 'TEXT');
+  addColumn('entries', 'clean_image_url', 'TEXT');
   addColumn('plans', 'project_id', 'TEXT');
   addColumn('audit', 'project_id', 'TEXT');
   addColumn('audit', 'previous_hash', "TEXT DEFAULT ''");
@@ -555,12 +559,16 @@ export const Experiments = {
 };
 
 export const Entries = {
-  create(expId, { type = 'note', author = 'Unknown', role = '', text, imageUrl = null }) {
+  create(expId, { type = 'note', author = 'Unknown', role = '', text, imageUrl = null, rawImageUrl = null, cleanImageUrl = null }) {
     const _id = id(), t = now();
-    const fp = fingerprint(JSON.stringify({ experiment_id: expId, type, text, image_url: imageUrl || null, created_at: t }));
-    db.prepare(`INSERT INTO entries (id,experiment_id,type,author,role,text,image_url,hash,created_at)
-                VALUES (?,?,?,?,?,?,?,?,?)`)
-      .run(_id, expId, type, author, role, text, imageUrl, fp, t);
+    const fp = fingerprint(JSON.stringify({
+      experiment_id: expId, type, text, image_url: imageUrl || null,
+      raw_image_url: rawImageUrl || null, clean_image_url: cleanImageUrl || null,
+      created_at: t
+    }));
+    db.prepare(`INSERT INTO entries (id,experiment_id,type,author,role,text,image_url,raw_image_url,clean_image_url,hash,created_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
+      .run(_id, expId, type, author, role, text, imageUrl, rawImageUrl, cleanImageUrl, fp, t);
     db.prepare('UPDATE experiments SET updated_at=? WHERE id=?').run(t, expId);
     return db.prepare('SELECT * FROM entries WHERE id = ?').get(_id);
   },

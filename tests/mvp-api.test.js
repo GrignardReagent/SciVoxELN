@@ -73,6 +73,22 @@ test('MVP pilot workflow: projects, access, signatures, exports, audit and sessi
     });
     assert.match(entry.hash, /^[a-f0-9]{64}$/);
 
+    const rawUpload = await scientist.uploadImage(base, tinyPng(), 'raw-slide-sketch.png', 'figure-raw', exp.id);
+    const cleanUpload = await scientist.uploadImage(base, tinyPng(), 'clean-slide-diagram.png', 'figure-clean', exp.id);
+    assert.match(rawUpload.url, new RegExp(`^/uploads/figures/${exp.id}/raw/`));
+    assert.match(cleanUpload.url, new RegExp(`^/uploads/figures/${exp.id}/clean/`));
+
+    const figure = await scientist.req(base, 'POST', `/api/experiments/${exp.id}/entries`, {
+      type: 'figure',
+      text: 'Microscope slide layout with sample regions A-D.',
+      imageUrl: cleanUpload.url,
+      rawImageUrl: rawUpload.url,
+      cleanImageUrl: cleanUpload.url
+    });
+    assert.equal(figure.type, 'figure');
+    assert.equal(figure.raw_image_url, rawUpload.url);
+    assert.equal(figure.clean_image_url, cleanUpload.url);
+
     await assert.rejects(
       () => scientist.req(base, 'POST', `/api/entries/${entry.id}/sign`, { meaning: 'author', password: 'wrong-password' }),
       /401/
@@ -97,6 +113,7 @@ test('MVP pilot workflow: projects, access, signatures, exports, audit and sessi
 
     const audit = await admin.req(base, 'GET', `/api/audit?project=${project.id}`);
     assert.ok(audit.some(a => a.action === 'SIGN_ENTRY'));
+    assert.ok(audit.some(a => a.action === 'ADD_FIGURE_ENTRY'));
     assert.ok(audit.every(a => a.hash && a.previous_hash != null));
 
     const search = await scientist.req(base, 'GET', '/api/search?q=formulation clarity');
@@ -197,8 +214,29 @@ function jar() {
       const data = text && (res.headers.get('content-type') || '').includes('json') ? JSON.parse(text) : text;
       if (!res.ok) throw new Error(`${res.status} ${typeof data === 'string' ? data : data.error || res.statusText}`);
       return data;
+    },
+    async uploadImage(base, bytes, filename, kind, experimentId = '') {
+      const fd = new FormData();
+      fd.append('kind', kind);
+      if (experimentId) fd.append('experimentId', experimentId);
+      fd.append('image', new Blob([bytes], { type: 'image/png' }), filename);
+      const res = await fetch(base + '/api/uploads', {
+        method: 'POST',
+        headers: cookie ? { cookie } : {},
+        body: fd
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(`${res.status} ${data.error || res.statusText}`);
+      return data;
     }
   };
+}
+
+function tinyPng() {
+  return Uint8Array.from(Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=',
+    'base64'
+  ));
 }
 
 function listen(app) {
