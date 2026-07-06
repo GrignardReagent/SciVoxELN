@@ -181,6 +181,12 @@ test('MVP pilot workflow: projects, access, signatures, exports, audit and sessi
     const exported = await admin.req(base, 'GET', `/api/experiments/${exp.id}/export`);
     assert.equal(exported.experiment.id, exp.id);
     assert.match(exported.integrity.sha256, /^[a-f0-9]{64}$/);
+    const exportedPdf = await admin.raw(base, 'GET', `/api/experiments/${exp.id}/export?format=pdf`);
+    assert.equal(exportedPdf.status, 200);
+    assert.match(exportedPdf.headers['content-type'], /application\/pdf/);
+    assert.match(exportedPdf.headers['content-disposition'], /mrna-stability-screen-export\.pdf/);
+    assert.equal(exportedPdf.body.subarray(0, 5).toString(), '%PDF-');
+    assert.ok(exportedPdf.body.includes(Buffer.from('mRNA stability screen')));
 
     const audit = await admin.req(base, 'GET', `/api/audit?project=${project.id}`);
     assert.ok(audit.some(a => a.action === 'SIGN_ENTRY'));
@@ -298,6 +304,25 @@ function jar() {
       const data = text && (res.headers.get('content-type') || '').includes('json') ? JSON.parse(text) : text;
       if (!res.ok) throw new Error(`${res.status} ${typeof data === 'string' ? data : data.error || res.statusText}`);
       return data;
+    },
+    async raw(base, method, url, body) {
+      const headers = {};
+      if (cookie) headers.cookie = cookie;
+      if (body !== undefined) headers['content-type'] = 'application/json';
+      const res = await fetch(base + url, {
+        method,
+        headers,
+        body: body !== undefined ? JSON.stringify(body) : undefined
+      });
+      const setCookie = res.headers.get('set-cookie');
+      if (setCookie) cookie = setCookie.split(';')[0];
+      const buffer = Buffer.from(await res.arrayBuffer());
+      if (!res.ok) throw new Error(`${res.status} ${buffer.toString('utf8') || res.statusText}`);
+      return {
+        status: res.status,
+        headers: Object.fromEntries(res.headers.entries()),
+        body: buffer
+      };
     },
     async uploadImage(base, bytes, filename, kind, experimentId = '') {
       const fd = new FormData();

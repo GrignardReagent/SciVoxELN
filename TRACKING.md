@@ -51,7 +51,7 @@ and repo-native workflow tracking.
 ### Product Follow-Ups
 
 - [ ] SMTP delivery for email verification / password reset tokens.
-- [ ] PDF/ZIP signed export bundle (MVP has hashed JSON/HTML evidence exports).
+- [ ] ZIP signed export bundle (MVP has hashed JSON/HTML/PDF evidence exports).
 - [ ] LIMS / instrument connectors and scheduled on-prem to cloud sync.
 - [ ] Smart LIMS / instrument connectors to get accurate data from machines.
 - [ ] Per-project inventory scoping (inventory is still shared across the
@@ -88,7 +88,7 @@ and repo-native workflow tracking.
 - Workspaces/projects: default workspace migration, project memberships
   (`viewer|scientist|reviewer|owner`), and server-side access checks on
   experiments, plans, references, AI context, exports and search.
-- Experiment evidence export as hashed JSON or HTML packages.
+- Experiment evidence export as hashed JSON, HTML or PDF packages.
 - Access-scoped ranked search across experiments, entries and references.
 - Experiment planner and Inventory modules.
 - Backend REST API + repository layer in `src/db.js` (all SQL isolated here).
@@ -142,6 +142,24 @@ and repo-native workflow tracking.
   non-admins.
 
 ## Change Log
+
+### 2026-07-06T20:47:03Z - Add PDF export menu
+
+- Task: SVX-000
+- Branch: `master`
+- Summary: Added experiment PDF export generation, recorded PDF exports in the
+  existing export ledger, and moved PDF/HTML/JSON export links into a compact
+  three-dot menu at the top right of the experiment summary card.
+- Validation: `npm test` passed with 11 tests; Playwright verified the desktop
+  export menu and PDF download, Poppler rendered the PDF page, and a fresh
+  mobile viewport kept the export popover inside the screen.
+- Files:
+  - `TRACKING.md`
+  - `public/css/styles.css`
+  - `public/js/views/experiments.js`
+  - `src/routes/experiments.js`
+  - `tests/experiment-entry-delete-ui.test.js`
+  - `tests/mvp-api.test.js`
 
 ### 2026-07-06T20:34:49Z - Add experiment delete UI control
 

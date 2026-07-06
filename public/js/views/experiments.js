@@ -65,12 +65,13 @@ export const renderExperiment = guard(async (root, ctx, id) => {
     <div class="split" style="margin-top:14px">
       <div>
         <div class="card" style="margin-bottom:16px">
-          <div class="row"><h2 class="sec-t" style="margin:0">${esc(e.title)}</h2><span class="status s-${e.status}">${e.status}</span></div>
+          <div class="experiment-card-head">
+            <div class="row"><h2 class="sec-t" style="margin:0">${esc(e.title)}</h2><span class="status s-${e.status}">${e.status}</span></div>
+            ${exportMenu(e.id)}
+          </div>
           <div class="muted" style="font-size:13px;margin-top:6px">${esc(e.objective || 'No objective set')}</div>
           <div class="row" style="margin-top:12px">
             <button class="btn sec sm" data-edit>Edit details</button>
-            <a class="btn ghost sm" href="/api/experiments/${esc(e.id)}/export?format=html" download>Export HTML</a>
-            <a class="btn ghost sm" href="/api/experiments/${esc(e.id)}/export" download>Export JSON</a>
             ${locked ? '<span class="pill">🔒 Locked — read only</span>' : '<button class="btn sec sm" data-observe>👁 Observe run</button><button class="btn ok sm" data-lock>🔒 Lock experiment</button>'}
             ${deleteButton}
           </div>
@@ -111,6 +112,7 @@ export const renderExperiment = guard(async (root, ctx, id) => {
   if (lockBtn) lockBtn.onclick = () => confirmModal('Lock experiment?',
     'Locking makes this experiment read-only. No new entries can be added.',
     guard(async () => { await api.lockExperiment(e.id); toast('Experiment locked'); ctx.go('experiments', { id: e.id }); }));
+  wireExportMenu(root);
   wireExperimentDeleteButton(root, ctx, e);
   wireSignButtons(root, ctx, e.id);
   wireDeleteButtons(root, ctx, e.id);
@@ -120,6 +122,38 @@ export const renderExperiment = guard(async (root, ctx, id) => {
   mountAssistant(root, e);
   mountReferences(root, e);
 });
+
+function exportMenu(expId) {
+  const base = `/api/experiments/${esc(expId)}/export`;
+  return `<div class="export-menu">
+    <button class="btn ghost sm export-trigger" type="button" data-export-toggle aria-haspopup="true" aria-expanded="false" title="Export options">...</button>
+    <div class="export-popover" data-export-menu hidden>
+      <a href="${base}?format=pdf" download>Export PDF</a>
+      <a href="${base}?format=html" download>Export HTML</a>
+      <a href="${base}" download>Export JSON</a>
+    </div>
+  </div>`;
+}
+
+function wireExportMenu(root) {
+  const btn = root.querySelector('[data-export-toggle]');
+  const menu = root.querySelector('[data-export-menu]');
+  if (!btn || !menu) return;
+  const close = () => {
+    menu.hidden = true;
+    btn.setAttribute('aria-expanded', 'false');
+  };
+  btn.onclick = e => {
+    e.stopPropagation();
+    const willOpen = menu.hidden;
+    menu.hidden = !willOpen;
+    btn.setAttribute('aria-expanded', String(willOpen));
+  };
+  menu.onclick = e => e.stopPropagation();
+  root.addEventListener('click', e => {
+    if (!menu.hidden && !e.target.closest('.export-menu')) close();
+  });
+}
 
 function experimentDeleteButton(locked) {
   if (!isAdmin()) {
