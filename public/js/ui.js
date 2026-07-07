@@ -19,9 +19,57 @@ export function toast(msg, isErr = false) {
   flashT = setTimeout(() => f.classList.remove('on'), 2600);
 }
 
+const autoGrowRegistry = new WeakSet();
+let autoGrowObserver = null;
+let autoGrowResizeInstalled = false;
+
+export function autoGrowTextareas(root = document) {
+  const found = [];
+  if (root?.matches?.('textarea')) found.push(root);
+  if (root?.querySelectorAll) found.push(...root.querySelectorAll('textarea'));
+  found.forEach(prepareAutoGrowTextarea);
+}
+
+export function installTextareaAutoGrow(root = document.body) {
+  autoGrowTextareas(root);
+  if (!autoGrowResizeInstalled) {
+    window.addEventListener('resize', () => autoGrowTextareas(root));
+    autoGrowResizeInstalled = true;
+  }
+  if (autoGrowObserver || typeof MutationObserver === 'undefined') return;
+  autoGrowObserver = new MutationObserver(records => {
+    records.forEach(record => {
+      record.addedNodes.forEach(node => {
+        if (node.nodeType === 1) autoGrowTextareas(node);
+      });
+    });
+  });
+  autoGrowObserver.observe(root, { childList: true, subtree: true });
+}
+
+function prepareAutoGrowTextarea(el) {
+  if (autoGrowRegistry.has(el)) {
+    growTextarea(el);
+    return;
+  }
+  autoGrowRegistry.add(el);
+  el.dataset.autogrow = 'true';
+  el.style.overflowY = 'hidden';
+  el.addEventListener('input', () => growTextarea(el));
+  el.addEventListener('change', () => growTextarea(el));
+  growTextarea(el);
+}
+
+function growTextarea(el) {
+  el.style.height = 'auto';
+  const border = el.offsetHeight - el.clientHeight;
+  el.style.height = `${el.scrollHeight + border}px`;
+}
+
 export function modal(html) {
   document.getElementById('modal').innerHTML = html;
   document.getElementById('overlay').classList.add('on');
+  autoGrowTextareas(document.getElementById('modal'));
 }
 export function closeModal() {
   document.getElementById('overlay').classList.remove('on');

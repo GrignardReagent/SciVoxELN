@@ -28,9 +28,10 @@ const now = () => new Date().toISOString();
 const id = () => randomUUID();
 const DEFAULT_ORG_SLUG = 'default';
 const DEFAULT_PROJECT_SLUG = 'general-r-and-d';
-export const HIDDEN_ENTRY_TYPES = new Set(['voice_transcript']);
+export const HIDDEN_ENTRY_TYPES = new Set(['voice_transcript', 'ocr_raw_text']);
 
 export const PROJECT_ROLES = { viewer: 1, scientist: 2, reviewer: 3, owner: 4 };
+export const OUTCOME_STATUSES = new Set(['running', 'needs_redo', 'success', 'fail', 'inconclusive']);
 
 /** SHA-256 content fingerprint for entries, signatures, exports and audit rows. */
 export function fingerprint(value) {
@@ -68,6 +69,11 @@ function cleanEntryIds(values) {
 
 export function isHiddenEntryType(type) {
   return HIDDEN_ENTRY_TYPES.has(String(type || ''));
+}
+
+function cleanOutcomeStatus(value) {
+  const status = String(value || '').trim().toLowerCase();
+  return OUTCOME_STATUSES.has(status) ? status : 'running';
 }
 
 /* ------------------------------------------------------------------ */
@@ -155,9 +161,34 @@ export function migrate() {
       project     TEXT DEFAULT '',
       status      TEXT NOT NULL DEFAULT 'active',
       objective   TEXT DEFAULT '',
+      hypothesis  TEXT DEFAULT '',
+      protocol    TEXT DEFAULT '',
+      materials   TEXT DEFAULT '',
+      success_criteria TEXT DEFAULT '',
+      safety_notes TEXT DEFAULT '',
+      tags        TEXT DEFAULT '',
+      outcome_status TEXT NOT NULL DEFAULT 'running',
+      outcome_summary TEXT DEFAULT '',
       created_at  TEXT NOT NULL,
       updated_at  TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS experiment_templates (
+      id          TEXT PRIMARY KEY,
+      project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      name        TEXT NOT NULL,
+      description TEXT DEFAULT '',
+      objective   TEXT DEFAULT '',
+      hypothesis  TEXT DEFAULT '',
+      protocol    TEXT DEFAULT '',
+      materials   TEXT DEFAULT '',
+      success_criteria TEXT DEFAULT '',
+      safety_notes TEXT DEFAULT '',
+      created_by  TEXT DEFAULT '',
+      created_at  TEXT NOT NULL,
+      updated_at  TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_experiment_templates_project ON experiment_templates(project_id);
 
     CREATE TABLE IF NOT EXISTS entries (
       id                TEXT PRIMARY KEY,
@@ -183,6 +214,62 @@ export function migrate() {
       updated_at        TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_entries_exp ON entries(experiment_id);
+
+    CREATE TABLE IF NOT EXISTS entry_comments (
+      id         TEXT PRIMARY KEY,
+      entry_id   TEXT NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
+      user_id    TEXT REFERENCES users(id) ON DELETE SET NULL,
+      author     TEXT DEFAULT 'Unknown',
+      role       TEXT DEFAULT '',
+      text       TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_entry_comments_entry ON entry_comments(entry_id, created_at);
+
+    CREATE TABLE IF NOT EXISTS experiment_links (
+      id                   TEXT PRIMARY KEY,
+      experiment_id        TEXT NOT NULL REFERENCES experiments(id) ON DELETE CASCADE,
+      linked_experiment_id TEXT NOT NULL REFERENCES experiments(id) ON DELETE CASCADE,
+      note                 TEXT DEFAULT '',
+      created_by           TEXT DEFAULT '',
+      created_at           TEXT NOT NULL,
+      UNIQUE(experiment_id, linked_experiment_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_experiment_links_exp ON experiment_links(experiment_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_experiment_links_target ON experiment_links(linked_experiment_id);
+
+    CREATE TABLE IF NOT EXISTS experiment_attachments (
+      id            TEXT PRIMARY KEY,
+      experiment_id TEXT NOT NULL REFERENCES experiments(id) ON DELETE CASCADE,
+      original_name TEXT NOT NULL,
+      stored_name   TEXT NOT NULL,
+      mime_type     TEXT DEFAULT '',
+      size          INTEGER NOT NULL DEFAULT 0,
+      url           TEXT NOT NULL,
+      hash          TEXT NOT NULL,
+      note          TEXT DEFAULT '',
+      uploaded_by   TEXT DEFAULT '',
+      uploaded_at   TEXT NOT NULL,
+      deleted_at    TEXT,
+      deleted_by    TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_experiment_attachments_exp ON experiment_attachments(experiment_id, uploaded_at);
+
+    CREATE TABLE IF NOT EXISTS experiment_steps (
+      id            TEXT PRIMARY KEY,
+      experiment_id TEXT NOT NULL REFERENCES experiments(id) ON DELETE CASCADE,
+      text          TEXT NOT NULL,
+      position      INTEGER NOT NULL DEFAULT 1,
+      done          INTEGER NOT NULL DEFAULT 0,
+      created_by    TEXT DEFAULT '',
+      created_at    TEXT NOT NULL,
+      updated_at    TEXT NOT NULL,
+      completed_at  TEXT,
+      completed_by  TEXT DEFAULT '',
+      deleted_at    TEXT,
+      deleted_by    TEXT DEFAULT ''
+    );
+    CREATE INDEX IF NOT EXISTS idx_experiment_steps_exp ON experiment_steps(experiment_id, deleted_at, position);
 
     CREATE TABLE IF NOT EXISTS plans (
       id               TEXT PRIMARY KEY,
@@ -214,6 +301,31 @@ export function migrate() {
       created_at     TEXT NOT NULL,
       updated_at     TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS inventory_reservations (
+      id           TEXT PRIMARY KEY,
+      item_id      TEXT NOT NULL REFERENCES inventory(id) ON DELETE CASCADE,
+      user_id      TEXT REFERENCES users(id) ON DELETE SET NULL,
+      reserved_by  TEXT DEFAULT '',
+      purpose      TEXT DEFAULT '',
+      starts_at    TEXT NOT NULL,
+      ends_at      TEXT NOT NULL,
+      created_at   TEXT NOT NULL,
+      cancelled_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_inventory_reservations_item_time
+      ON inventory_reservations(item_id, starts_at, ends_at);
+
+    CREATE TABLE IF NOT EXISTS calendar_feed_tokens (
+      id           TEXT PRIMARY KEY,
+      user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      item_id      TEXT NOT NULL REFERENCES inventory(id) ON DELETE CASCADE,
+      token_hash   TEXT NOT NULL UNIQUE,
+      created_at   TEXT NOT NULL,
+      revoked_at   TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_calendar_feed_tokens_item
+      ON calendar_feed_tokens(item_id, revoked_at);
 
     CREATE TABLE IF NOT EXISTS audit (
       id            TEXT PRIMARY KEY,
@@ -257,6 +369,14 @@ export function migrate() {
   addColumn('users', 'archived_at', 'TEXT');
   addColumn('users', 'archived_by', 'TEXT');
   addColumn('experiments', 'project_id', 'TEXT');
+  addColumn('experiments', 'hypothesis', "TEXT DEFAULT ''");
+  addColumn('experiments', 'protocol', "TEXT DEFAULT ''");
+  addColumn('experiments', 'materials', "TEXT DEFAULT ''");
+  addColumn('experiments', 'success_criteria', "TEXT DEFAULT ''");
+  addColumn('experiments', 'safety_notes', "TEXT DEFAULT ''");
+  addColumn('experiments', 'tags', "TEXT DEFAULT ''");
+  addColumn('experiments', 'outcome_status', "TEXT NOT NULL DEFAULT 'running'");
+  addColumn('experiments', 'outcome_summary', "TEXT DEFAULT ''");
   addColumn('entries', 'signature_meaning', 'TEXT');
   addColumn('entries', 'deleted_at', 'TEXT');
   addColumn('entries', 'deleted_by', 'TEXT');
@@ -453,9 +573,11 @@ export const Projects = {
       (SELECT COUNT(*) FROM experiments e WHERE e.project_id=p.id) AS experiment_count,
       (SELECT COUNT(*) FROM memberships m WHERE m.project_id=p.id) AS member_count
       FROM projects p JOIN orgs o ON o.id=p.org_id`;
-    if (user?.role === 'admin') return db.prepare(`${sql} ORDER BY o.name COLLATE NOCASE, p.name COLLATE NOCASE`).all();
-    return db.prepare(`${sql} JOIN memberships m ON m.project_id=p.id
-      WHERE m.user_id=? ORDER BY o.name COLLATE NOCASE, p.name COLLATE NOCASE`).all(user?.id || '');
+    const rows = user?.role === 'admin'
+      ? db.prepare(`${sql} ORDER BY o.name COLLATE NOCASE, p.name COLLATE NOCASE`).all()
+      : db.prepare(`${sql} JOIN memberships m ON m.project_id=p.id
+        WHERE m.user_id=? ORDER BY o.name COLLATE NOCASE, p.name COLLATE NOCASE`).all(user?.id || '');
+    return rows.map(row => this.withAccess(row, user));
   },
   get(projectId) {
     return db.prepare(`SELECT p.*, o.name AS org_name FROM projects p
@@ -502,6 +624,25 @@ export const Projects = {
     if (user.role === 'admin') return true;
     const m = this.membership(user.id, projectId);
     return !!m && projectRoleRank(m.role) >= projectRoleRank(minRole);
+  },
+  roleForUser(user, projectId) {
+    if (!user || !projectId) return null;
+    if (user.role === 'admin') return 'admin';
+    return this.membership(user.id, projectId)?.role || null;
+  },
+  accessFor(user, projectId) {
+    return {
+      project_role: this.roleForUser(user, projectId),
+      can_read: this.canAccessProject(user, projectId, 'viewer'),
+      can_write: this.canAccessProject(user, projectId, 'scientist'),
+      can_review: this.canAccessProject(user, projectId, 'reviewer'),
+      can_manage_members: this.canAccessProject(user, projectId, 'owner'),
+      can_admin_delete: user?.role === 'admin'
+    };
+  },
+  withAccess(project, user) {
+    const access = this.accessFor(user, project?.id);
+    return { ...project, current_user_project_role: access.project_role, access };
   }
 };
 
@@ -549,7 +690,7 @@ export const Audit = {
 /* ------------------------------------------------------------------ */
 function withProjectRows(base, user, order = 'e.created_at DESC') {
   const select = `SELECT e.*, p.name AS project_name, p.org_id AS org_id, o.name AS org_name,
-    (SELECT COUNT(*) FROM entries en WHERE en.experiment_id=e.id AND en.deleted_at IS NULL AND en.type NOT IN ('voice_transcript')) AS entryCount
+    (SELECT COUNT(*) FROM entries en WHERE en.experiment_id=e.id AND en.deleted_at IS NULL AND en.type NOT IN ('voice_transcript','ocr_raw_text')) AS entryCount
     FROM experiments e LEFT JOIN projects p ON p.id=e.project_id LEFT JOIN orgs o ON o.id=p.org_id`;
   if (user?.role === 'admin') return db.prepare(`${select} ${base} ORDER BY ${order}`).all();
   const ids = Projects.idsForUser(user);
@@ -558,9 +699,76 @@ function withProjectRows(base, user, order = 'e.created_at DESC') {
   return db.prepare(`${select} ${where} ORDER BY ${order}`).all(...ids);
 }
 
+export const ExperimentTemplates = {
+  list(user = null, { projectId = '' } = {}) {
+    const select = `SELECT t.*, p.name AS project_name, o.name AS org_name
+      FROM experiment_templates t
+      JOIN projects p ON p.id=t.project_id
+      JOIN orgs o ON o.id=p.org_id`;
+    const where = [];
+    const args = [];
+    if (projectId) { where.push('t.project_id=?'); args.push(projectId); }
+    if (user?.role !== 'admin') {
+      const ids = Projects.idsForUser(user);
+      if (!ids.length) return [];
+      where.push(`t.project_id IN (${placeholders(ids)})`);
+      args.push(...ids);
+    }
+    const sql = `${select}${where.length ? ' WHERE ' + where.join(' AND ') : ''} ORDER BY p.name COLLATE NOCASE, t.name COLLATE NOCASE`;
+    return db.prepare(sql).all(...args);
+  },
+  get(templateId, user = null) {
+    const row = db.prepare(`SELECT t.*, p.name AS project_name, o.name AS org_name
+      FROM experiment_templates t
+      JOIN projects p ON p.id=t.project_id
+      JOIN orgs o ON o.id=p.org_id
+      WHERE t.id=?`).get(templateId);
+    if (!row) return null;
+    if (user && !Projects.canAccessProject(user, row.project_id, 'viewer')) return null;
+    return row;
+  },
+  create(data = {}) {
+    const _id = id(), t = now();
+    const projectId = data.project_id || Projects.defaultProjectId();
+    db.prepare(`INSERT INTO experiment_templates
+      (id,project_id,name,description,objective,hypothesis,protocol,materials,success_criteria,safety_notes,created_by,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .run(
+        _id,
+        projectId,
+        String(data.name || 'Experiment template').trim(),
+        data.description || '',
+        data.objective || '',
+        data.hypothesis || '',
+        data.protocol || '',
+        data.materials || '',
+        data.success_criteria || '',
+        data.safety_notes || '',
+        data.created_by || '',
+        t,
+        t
+      );
+    return this.get(_id);
+  },
+  createFromExperiment(exp, { name = '', description = '', createdBy = '' } = {}) {
+    return this.create({
+      project_id: exp.project_id,
+      name: name || `${exp.title} template`,
+      description,
+      objective: exp.objective || '',
+      hypothesis: exp.hypothesis || '',
+      protocol: exp.protocol || '',
+      materials: exp.materials || '',
+      success_criteria: exp.success_criteria || '',
+      safety_notes: exp.safety_notes || '',
+      created_by: createdBy
+    });
+  }
+};
+
 export const Experiments = {
   list(user = null) {
-    return withProjectRows('', user);
+    return withProjectRows('', user).map(row => ({ ...row, access: Projects.accessFor(user, row.project_id) }));
   },
   get(expId, user = null) {
     const exp = db.prepare(`SELECT e.*, p.name AS project_name, o.name AS org_name
@@ -568,15 +776,26 @@ export const Experiments = {
       WHERE e.id = ?`).get(expId);
     if (!exp) return null;
     if (user && !Projects.canAccessProject(user, exp.project_id, 'viewer')) return null;
+    exp.access = Projects.accessFor(user, exp.project_id);
     exp.entries = db.prepare('SELECT * FROM entries WHERE experiment_id = ? AND deleted_at IS NULL ORDER BY created_at ASC').all(expId);
+    attachEntryComments(exp.entries);
     return exp;
   },
-  create({ title, project = '', objective = '', status = 'active', project_id = null }) {
+  create({
+    title, project = '', objective = '', status = 'active', project_id = null,
+    hypothesis = '', protocol = '', materials = '', success_criteria = '', safety_notes = '', tags = '',
+    outcome_status = 'running', outcome_summary = ''
+  }) {
     const _id = id(), t = now();
     const projectId = project_id || Projects.defaultProjectId();
     const projectName = project || Projects.get(projectId)?.name || '';
-    db.prepare('INSERT INTO experiments (id,project_id,title,project,status,objective,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)')
-      .run(_id, projectId, title, projectName, status, objective, t, t);
+    db.prepare(`INSERT INTO experiments
+      (id,project_id,title,project,status,objective,hypothesis,protocol,materials,success_criteria,safety_notes,tags,outcome_status,outcome_summary,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .run(
+        _id, projectId, title, projectName, status, objective, hypothesis, protocol, materials,
+        success_criteria, safety_notes, tags, cleanOutcomeStatus(outcome_status), outcome_summary || '', t, t
+      );
     return this.get(_id);
   },
   update(expId, fields) {
@@ -584,9 +803,23 @@ export const Experiments = {
     if (!exp) return null;
     const nextProjectId = fields.project_id ?? exp.project_id;
     const nextProjectName = fields.project ?? (nextProjectId !== exp.project_id ? Projects.get(nextProjectId)?.name || exp.project : exp.project);
-    const next = { ...exp, ...fields, project_id: nextProjectId, project: nextProjectName, updated_at: now() };
-    db.prepare('UPDATE experiments SET project_id=?,title=?,project=?,status=?,objective=?,updated_at=? WHERE id=?')
-      .run(next.project_id, next.title, next.project, next.status, next.objective, next.updated_at, expId);
+    const next = {
+      ...exp,
+      ...fields,
+      outcome_status: fields.outcome_status !== undefined ? cleanOutcomeStatus(fields.outcome_status) : cleanOutcomeStatus(exp.outcome_status),
+      outcome_summary: fields.outcome_summary !== undefined ? String(fields.outcome_summary || '') : (exp.outcome_summary || ''),
+      project_id: nextProjectId,
+      project: nextProjectName,
+      updated_at: now()
+    };
+    db.prepare(`UPDATE experiments SET
+      project_id=?,title=?,project=?,status=?,objective=?,hypothesis=?,protocol=?,materials=?,success_criteria=?,safety_notes=?,tags=?,outcome_status=?,outcome_summary=?,updated_at=?
+      WHERE id=?`)
+      .run(
+        next.project_id, next.title, next.project, next.status, next.objective,
+        next.hypothesis, next.protocol, next.materials, next.success_criteria, next.safety_notes,
+        next.tags, next.outcome_status, next.outcome_summary, next.updated_at, expId
+      );
     return this.get(expId);
   },
   remove(expId) {
@@ -606,7 +839,7 @@ export const Entries = {
       JOIN experiments e ON e.id=en.experiment_id
       LEFT JOIN projects p ON p.id=e.project_id
       LEFT JOIN orgs o ON o.id=p.org_id
-      WHERE en.deleted_at IS NULL AND en.type NOT IN ('voice_transcript')`;
+      WHERE en.deleted_at IS NULL AND en.type NOT IN ('voice_transcript','ocr_raw_text')`;
     if (user?.role === 'admin') return db.prepare(`${select} ORDER BY en.created_at DESC`).all();
     const ids = Projects.idsForUser(user);
     if (!ids.length) return [];
@@ -701,6 +934,174 @@ export const Entries = {
       .run(t, by, reason, entryId);
     db.prepare('UPDATE experiments SET updated_at=? WHERE id=?').run(t, en.experiment_id);
     return this.get(entryId);
+  }
+};
+
+export const EntryComments = {
+  list(entryId) {
+    return db.prepare('SELECT * FROM entry_comments WHERE entry_id=? ORDER BY created_at ASC').all(entryId);
+  },
+  create(entryId, { userId = null, author = 'Unknown', role = '', text = '' } = {}) {
+    const _id = id(), t = now();
+    db.prepare(`INSERT INTO entry_comments (id,entry_id,user_id,author,role,text,created_at)
+                VALUES (?,?,?,?,?,?,?)`)
+      .run(_id, entryId, userId, author || 'Unknown', role || '', text, t);
+    const entry = Entries.get(entryId);
+    if (entry) db.prepare('UPDATE experiments SET updated_at=? WHERE id=?').run(t, entry.experiment_id);
+    return db.prepare('SELECT * FROM entry_comments WHERE id=?').get(_id);
+  }
+};
+
+function attachEntryComments(entries = []) {
+  if (!entries.length) return entries;
+  const ids = entries.map(en => en.id);
+  const comments = db.prepare(`SELECT * FROM entry_comments WHERE entry_id IN (${placeholders(ids)}) ORDER BY created_at ASC`).all(...ids);
+  const byEntry = new Map();
+  for (const comment of comments) {
+    if (!byEntry.has(comment.entry_id)) byEntry.set(comment.entry_id, []);
+    byEntry.get(comment.entry_id).push(comment);
+  }
+  for (const entry of entries) entry.comments = byEntry.get(entry.id) || [];
+  return entries;
+}
+
+export const ExperimentLinks = {
+  list(expId, user = null) {
+    const rows = db.prepare(`SELECT l.*, e.title AS linked_title, e.status AS linked_status,
+      e.project_id AS linked_project_id, e.project AS linked_project, e.tags AS linked_tags,
+      p.name AS linked_project_name, o.name AS linked_org_name
+      FROM experiment_links l
+      JOIN experiments e ON e.id=l.linked_experiment_id
+      LEFT JOIN projects p ON p.id=e.project_id
+      LEFT JOIN orgs o ON o.id=p.org_id
+      WHERE l.experiment_id=?
+      ORDER BY l.created_at ASC`).all(expId);
+    return user ? rows.filter(row => Projects.canAccessProject(user, row.linked_project_id, 'viewer')) : rows;
+  },
+  get(linkId, user = null) {
+    const row = db.prepare(`SELECT l.*, e.title AS linked_title, e.status AS linked_status,
+      e.project_id AS linked_project_id, e.project AS linked_project, e.tags AS linked_tags,
+      p.name AS linked_project_name, o.name AS linked_org_name
+      FROM experiment_links l
+      JOIN experiments e ON e.id=l.linked_experiment_id
+      LEFT JOIN projects p ON p.id=e.project_id
+      LEFT JOIN orgs o ON o.id=p.org_id
+      WHERE l.id=?`).get(linkId);
+    if (!row) return null;
+    if (user && !Projects.canAccessProject(user, row.linked_project_id, 'viewer')) return null;
+    return row;
+  },
+  create(expId, { linkedExperimentId, note = '', createdBy = '' } = {}) {
+    const _id = id(), t = now();
+    db.prepare(`INSERT INTO experiment_links (id,experiment_id,linked_experiment_id,note,created_by,created_at)
+      VALUES (?,?,?,?,?,?)`)
+      .run(_id, expId, linkedExperimentId, String(note || '').slice(0, 1000), createdBy || '', t);
+    db.prepare('UPDATE experiments SET updated_at=? WHERE id=?').run(t, expId);
+    return this.get(_id);
+  },
+  remove(expId, linkId) {
+    const t = now();
+    const changed = db.prepare('DELETE FROM experiment_links WHERE id=? AND experiment_id=?').run(linkId, expId).changes > 0;
+    if (changed) db.prepare('UPDATE experiments SET updated_at=? WHERE id=?').run(t, expId);
+    return changed;
+  }
+};
+
+export const ExperimentSteps = {
+  list(expId, { includeDeleted = false } = {}) {
+    const where = includeDeleted ? 'experiment_id=?' : 'experiment_id=? AND deleted_at IS NULL';
+    return db.prepare(`SELECT * FROM experiment_steps WHERE ${where} ORDER BY position ASC, created_at ASC`).all(expId);
+  },
+  get(stepId) {
+    return db.prepare('SELECT * FROM experiment_steps WHERE id=?').get(stepId);
+  },
+  create(expId, { text, createdBy = '' } = {}) {
+    const clean = String(text || '').trim();
+    if (!clean) throw new Error('Step text is required');
+    const _id = id(), t = now();
+    const position = (db.prepare('SELECT COALESCE(MAX(position), 0) + 1 AS next FROM experiment_steps WHERE experiment_id=? AND deleted_at IS NULL').get(expId)?.next) || 1;
+    db.prepare(`INSERT INTO experiment_steps
+      (id,experiment_id,text,position,done,created_by,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,?,?)`)
+      .run(_id, expId, clean.slice(0, 1000), position, 0, createdBy || '', t, t);
+    db.prepare('UPDATE experiments SET updated_at=? WHERE id=?').run(t, expId);
+    return this.get(_id);
+  },
+  update(expId, stepId, { text, done, completedBy = '' } = {}) {
+    const step = this.get(stepId);
+    if (!step || step.experiment_id !== expId || step.deleted_at) return null;
+    const t = now();
+    const nextText = text === undefined ? step.text : String(text || '').trim().slice(0, 1000);
+    if (!nextText) throw new Error('Step text is required');
+    const hasDone = done !== undefined;
+    const nextDone = hasDone ? (done ? 1 : 0) : Number(step.done) ? 1 : 0;
+    const completedAt = nextDone ? (Number(step.done) ? step.completed_at : t) : null;
+    const completedByValue = nextDone ? (Number(step.done) ? step.completed_by : completedBy || '') : '';
+    db.prepare(`UPDATE experiment_steps
+      SET text=?, done=?, completed_at=?, completed_by=?, updated_at=?
+      WHERE id=? AND experiment_id=? AND deleted_at IS NULL`)
+      .run(nextText, nextDone, completedAt, completedByValue, t, stepId, expId);
+    db.prepare('UPDATE experiments SET updated_at=? WHERE id=?').run(t, expId);
+    return this.get(stepId);
+  },
+  remove(expId, stepId, { deletedBy = '' } = {}) {
+    const step = this.get(stepId);
+    if (!step || step.experiment_id !== expId || step.deleted_at) return null;
+    const t = now();
+    db.prepare(`UPDATE experiment_steps SET deleted_at=?, deleted_by=?, updated_at=?
+      WHERE id=? AND experiment_id=? AND deleted_at IS NULL`)
+      .run(t, deletedBy || '', t, stepId, expId);
+    db.prepare('UPDATE experiments SET updated_at=? WHERE id=?').run(t, expId);
+    return this.get(stepId);
+  }
+};
+
+export const ExperimentAttachments = {
+  list(expId, { includeDeleted = false } = {}) {
+    const where = includeDeleted ? 'experiment_id=?' : 'experiment_id=? AND deleted_at IS NULL';
+    return db.prepare(`SELECT * FROM experiment_attachments WHERE ${where} ORDER BY uploaded_at ASC`).all(expId);
+  },
+  get(attachmentId) {
+    return db.prepare('SELECT * FROM experiment_attachments WHERE id=?').get(attachmentId);
+  },
+  create(expId, {
+    originalName,
+    storedName,
+    mimeType = '',
+    size = 0,
+    url,
+    hash,
+    note = '',
+    uploadedBy = ''
+  } = {}) {
+    const _id = id(), t = now();
+    db.prepare(`INSERT INTO experiment_attachments
+      (id,experiment_id,original_name,stored_name,mime_type,size,url,hash,note,uploaded_by,uploaded_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
+      .run(
+        _id,
+        expId,
+        String(originalName || storedName || 'attachment').slice(0, 500),
+        String(storedName || '').slice(0, 500),
+        String(mimeType || '').slice(0, 200),
+        Number(size) || 0,
+        String(url || '').slice(0, 1000),
+        String(hash || ''),
+        String(note || '').slice(0, 1000),
+        uploadedBy || '',
+        t
+      );
+    db.prepare('UPDATE experiments SET updated_at=? WHERE id=?').run(t, expId);
+    return this.get(_id);
+  },
+  remove(expId, attachmentId, { deletedBy = '' } = {}) {
+    const t = now();
+    db.prepare(`UPDATE experiment_attachments SET deleted_at=?, deleted_by=?
+      WHERE id=? AND experiment_id=? AND deleted_at IS NULL`)
+      .run(t, deletedBy || '', attachmentId, expId);
+    const attachment = this.get(attachmentId);
+    if (attachment?.deleted_at) db.prepare('UPDATE experiments SET updated_at=? WHERE id=?').run(t, expId);
+    return attachment;
   }
 };
 
@@ -834,6 +1235,58 @@ export const Inventory = {
   },
   remove(itemId) {
     return db.prepare('DELETE FROM inventory WHERE id = ?').run(itemId).changes > 0;
+  },
+  reservations(itemId) {
+    return db.prepare(`SELECT r.*, COALESCE(u.name, r.reserved_by, 'Unknown') AS reserved_by
+      FROM inventory_reservations r LEFT JOIN users u ON u.id=r.user_id
+      WHERE r.item_id=? AND r.cancelled_at IS NULL AND r.ends_at >= ?
+      ORDER BY r.starts_at ASC`).all(itemId, now());
+  },
+  reservationWindow(itemId, from, to) {
+    return db.prepare(`SELECT r.*, COALESCE(u.name, r.reserved_by, 'Unknown') AS reserved_by
+      FROM inventory_reservations r LEFT JOIN users u ON u.id=r.user_id
+      WHERE r.item_id=? AND r.cancelled_at IS NULL AND r.starts_at < ? AND r.ends_at > ?
+      ORDER BY r.starts_at ASC`).all(itemId, to, from);
+  },
+  getReservation(itemId, reservationId) {
+    return db.prepare(`SELECT r.*, COALESCE(u.name, r.reserved_by, 'Unknown') AS reserved_by
+      FROM inventory_reservations r LEFT JOIN users u ON u.id=r.user_id
+      WHERE r.item_id=? AND r.id=?`).get(itemId, reservationId);
+  },
+  overlappingReservation(itemId, startsAt, endsAt) {
+    return db.prepare(`SELECT r.*, COALESCE(u.name, r.reserved_by, 'Unknown') AS reserved_by
+      FROM inventory_reservations r LEFT JOIN users u ON u.id=r.user_id
+      WHERE r.item_id=? AND r.cancelled_at IS NULL AND r.starts_at < ? AND r.ends_at > ?
+      ORDER BY r.starts_at ASC LIMIT 1`).get(itemId, endsAt, startsAt);
+  },
+  createReservation(itemId, user, { starts_at, ends_at, purpose }) {
+    const _id = id();
+    db.prepare(`INSERT INTO inventory_reservations (id,item_id,user_id,reserved_by,purpose,starts_at,ends_at,created_at)
+      VALUES (?,?,?,?,?,?,?,?)`)
+      .run(_id, itemId, user?.id || null, user?.name || 'Unknown', purpose || '', starts_at, ends_at, now());
+    return this.getReservation(itemId, _id);
+  },
+  cancelReservation(itemId, reservationId) {
+    db.prepare('UPDATE inventory_reservations SET cancelled_at=? WHERE item_id=? AND id=? AND cancelled_at IS NULL')
+      .run(now(), itemId, reservationId);
+    return this.getReservation(itemId, reservationId);
+  },
+  createCalendarToken(itemId, user) {
+    const _id = id();
+    const token = randomToken();
+    db.prepare(`INSERT INTO calendar_feed_tokens (id,user_id,item_id,token_hash,created_at)
+      VALUES (?,?,?,?,?)`)
+      .run(_id, user.id, itemId, fingerprint(token), now());
+    const row = db.prepare('SELECT id,user_id,item_id,created_at,revoked_at FROM calendar_feed_tokens WHERE id=?').get(_id) || { id: _id, user_id: user.id, item_id: itemId };
+    return { ...row, token };
+  },
+  getCalendarToken(token) {
+    return db.prepare(`SELECT c.id, c.user_id, c.item_id, c.created_at, c.revoked_at
+      FROM calendar_feed_tokens c
+      JOIN inventory i ON i.id = c.item_id
+      JOIN users u ON u.id = c.user_id
+      WHERE c.token_hash=? AND c.revoked_at IS NULL AND u.archived_at IS NULL`)
+      .get(fingerprint(token));
   }
 };
 
@@ -862,7 +1315,9 @@ export const Search = {
     const terms = q.split(/\s+/).filter(Boolean).slice(0, 8);
     const expRows = Experiments.list(user);
     const experiments = expRows
-      .map(e => ({ ...e, score: scoreText([e.title, e.project_name, e.project, e.objective].join(' '), terms, { title: e.title }) }))
+      .map(e => ({ ...e, score: scoreText([
+        e.title, e.project_name, e.project, e.objective, e.tags, e.outcome_status, e.outcome_summary
+      ].join(' '), terms, { title: e.title }) }))
       .filter(e => e.score > 0)
       .sort((a, b) => b.score - a.score)
       .slice(0, 12);
@@ -874,7 +1329,7 @@ export const Search = {
 
     const entryRows = db.prepare(`SELECT en.*, e.title AS experiment_title, e.project_id, p.name AS project_name
       FROM entries en JOIN experiments e ON e.id=en.experiment_id LEFT JOIN projects p ON p.id=e.project_id
-      ${expFilter ? expFilter + ' AND' : 'WHERE'} en.deleted_at IS NULL AND en.type NOT IN ('voice_transcript')`).all(...args);
+      ${expFilter ? expFilter + ' AND' : 'WHERE'} en.deleted_at IS NULL AND en.type NOT IN ('voice_transcript','ocr_raw_text')`).all(...args);
     const entries = entryRows
       .map(en => ({ ...en, score: scoreText([en.experiment_title, en.project_name, en.type, en.text].join(' '), terms, { title: en.experiment_title }) }))
       .filter(en => en.score > 0)

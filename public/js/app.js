@@ -11,10 +11,11 @@ import { renderInventory } from './views/inventory.js';
 import { renderAudit } from './views/audit.js';
 import { renderUsers } from './views/users.js';
 import { renderSettings } from './views/settings.js';
-import { toast } from './ui.js';
+import { installTextareaAutoGrow, toast } from './ui.js';
 import { initTheme, toggleMode } from './theme.js';
 
 initTheme();
+installTextareaAutoGrow(document.body);
 
 const content = document.getElementById('content');
 const appRoot = document.getElementById('appRoot');

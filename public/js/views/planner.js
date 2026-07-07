@@ -99,7 +99,7 @@ function editor(root, ctx, plan, inv) {
 
     root.querySelectorAll('[data-vari]').forEach(el => bindVar(el, d, draw));
     root.querySelectorAll('[data-stepi]').forEach(el => bindStep(el, d, draw));
-    root.querySelectorAll('[data-mati]').forEach(el => bindMat(el, d, draw));
+    root.querySelectorAll('[data-mati]').forEach(el => bindMat(el, d, draw, inv));
 
     g('#save').onclick = guard(async () => { await api.updatePlan(d.id, d); toast('Plan saved'); });
     g('#del').onclick = () => confirmModal('Delete plan?', 'This cannot be undone.',
@@ -129,14 +129,27 @@ function stepRow(s, i) {
     <button class="btn ghost sm" data-del>✕</button></div>`;
 }
 function matRow(m, i, inv) {
-  const opts = ['<option value="">— free text —</option>'].concat(inv.map(it =>
-    `<option ${m.name === it.name ? 'selected' : ''}>${esc(it.name)}</option>`)).join('');
-  return `<div class="row" data-mati="${i}" style="margin-bottom:6px">
+  const selectedId = m.inventory_id || inv.find(it => it.name === m.name)?.id || '';
+  const opts = ['<option value="">— free text —</option>'].concat(inv.map(it => {
+    const status = inventoryStatus(it);
+    const label = [
+      it.name,
+      it.lot_number ? `lot ${it.lot_number}` : '',
+      `${it.quantity} ${it.unit || ''}`.trim(),
+      status !== 'ok' ? status : ''
+    ].filter(Boolean).join(' · ');
+    return `<option value="${esc(it.id)}" ${selectedId === it.id ? 'selected' : ''}>${esc(label)}</option>`;
+  })).join('');
+  return `<div data-mati="${i}" style="margin-bottom:8px">
+    <div class="row">
     <select class="txt" data-f="pick" style="flex:1">${opts}</select>
     <input class="txt" data-f="name" placeholder="Material" value="${esc(m.name)}" style="flex:1"/>
     <input class="txt" data-f="amount" placeholder="Amt" value="${esc(m.amount)}" style="width:80px"/>
     <input class="txt" data-f="unit" placeholder="Unit" value="${esc(m.unit || '')}" style="width:70px"/>
-    <button class="btn ghost sm" data-del>✕</button></div>`;
+    <button class="btn ghost sm" data-del>✕</button>
+    </div>
+    ${inventoryEvidence(m, inv)}
+  </div>`;
 }
 
 function bindVar(el, d, draw) {
@@ -150,13 +163,90 @@ function bindStep(el, d, draw) {
   el.querySelector('[data-f="done"]').onchange = e => d.steps[i].done = e.target.checked;
   el.querySelector('[data-del]').onclick = () => { d.steps.splice(i, 1); draw(); };
 }
-function bindMat(el, d, draw) {
+function bindMat(el, d, draw, inv) {
   const i = +el.dataset.mati;
   const pick = el.querySelector('[data-f="pick"]');
   const name = el.querySelector('[data-f="name"]');
-  pick.onchange = () => { if (pick.value) { name.value = pick.value; d.materials[i].name = pick.value; } };
-  name.onchange = () => d.materials[i].name = name.value;
+  pick.onchange = () => {
+    const item = inv.find(it => it.id === pick.value);
+    if (item) {
+      d.materials[i] = { ...d.materials[i], ...inventorySnapshot(item) };
+      draw();
+    } else {
+      d.materials[i] = clearInventorySnapshot({ ...d.materials[i], name: name.value });
+      draw();
+    }
+  };
+  name.onchange = () => {
+    const previousName = d.materials[i].name;
+    const hadInventory = !!d.materials[i].inventory_id;
+    d.materials[i].name = name.value;
+    if (hadInventory && name.value !== previousName) d.materials[i] = clearInventorySnapshot(d.materials[i]);
+  };
   el.querySelector('[data-f="amount"]').onchange = e => d.materials[i].amount = e.target.value;
   el.querySelector('[data-f="unit"]').onchange = e => d.materials[i].unit = e.target.value;
   el.querySelector('[data-del]').onclick = () => { d.materials.splice(i, 1); draw(); };
+}
+
+function inventorySnapshot(item) {
+  return {
+    inventory_id: item.id,
+    name: item.name,
+    unit: item.unit || '',
+    lot_number: item.lot_number || '',
+    catalog_number: item.catalog_number || '',
+    location: item.location || '',
+    available_quantity: item.quantity,
+    available_unit: item.unit || '',
+    reorder_level: item.reorder_level,
+    expiry_date: item.expiry_date || '',
+    inventory_status: inventoryStatus(item)
+  };
+}
+
+function clearInventorySnapshot(material) {
+  const copy = { ...material };
+  delete copy.inventory_id;
+  delete copy.lot_number;
+  delete copy.catalog_number;
+  delete copy.location;
+  delete copy.available_quantity;
+  delete copy.available_unit;
+  delete copy.reorder_level;
+  delete copy.expiry_date;
+  delete copy.inventory_status;
+  return copy;
+}
+
+function inventoryEvidence(material, inv) {
+  const fromInventory = inv.find(it => it.id === material.inventory_id);
+  const data = fromInventory ? { ...inventorySnapshot(fromInventory), amount: material.amount, unit: material.unit || fromInventory.unit } : material;
+  if (!data.inventory_id && !data.lot_number && !data.location && data.available_quantity == null && !data.expiry_date) return '';
+  const status = inventoryStatus(data);
+  const details = [
+    data.lot_number ? `lot ${data.lot_number}` : '',
+    data.catalog_number ? `cat ${data.catalog_number}` : '',
+    data.location || '',
+    data.available_quantity != null ? `available ${data.available_quantity} ${data.available_unit || data.unit || ''}`.trim() : '',
+    data.expiry_date ? `expires ${data.expiry_date}` : ''
+  ].filter(Boolean);
+  return `<div class="hint" data-inventory-evidence style="margin:6px 0 0 0">
+    <span class="pill ${status === 'expired' ? 'danger' : status === 'ok' ? '' : 'warn'}">${esc(status)}</span>
+    ${esc(details.join(' · ') || 'Inventory item selected')}
+  </div>`;
+}
+
+function inventoryStatus(item) {
+  if (item.inventory_status) return item.inventory_status;
+  if (item.expired) return 'expired';
+  if (item.low) return 'low';
+  if (item.expiring) return 'expiring';
+  const low = Number(item.available_quantity ?? item.quantity) <= Number(item.reorder_level);
+  if (Number.isFinite(Number(item.reorder_level)) && low) return 'low';
+  if (item.expiry_date) {
+    const days = (new Date(item.expiry_date) - new Date()) / 86400000;
+    if (days < 0) return 'expired';
+    if (days <= 30) return 'expiring';
+  }
+  return 'ok';
 }

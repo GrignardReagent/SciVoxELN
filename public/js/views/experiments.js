@@ -3,7 +3,7 @@ import { esc, fmt, fmtShort, toast, modal, closeModal, confirmModal, guard } fro
 import { getUser, isAdmin } from '../state.js';
 import { VoiceController, voiceSupported } from '../voice.js';
 import { Recorder, recorderSupported } from '../recorder.js';
-import { runOCR, fileToDataURL, cameraSupported, startCamera, stopCamera, captureFrame } from '../ocr.js';
+import { runOCR, fileToDataURL, dataURLtoBlob, cameraSupported, startCamera, stopCamera, captureFrame } from '../ocr.js';
 import { openObserverMode } from '../observer.js';
 import { openSketchFigureModal } from '../sketchpad.js';
 
@@ -11,17 +11,22 @@ import { openSketchFigureModal } from '../sketchpad.js';
 export const renderExperiments = guard(async (root, ctx) => {
   ctx.setHead('Experiments', 'All lab experiments');
   root.innerHTML = '<div class="muted">Loading…</div>';
-  let exps = await api.experiments();
+  const [allExps, projects] = await Promise.all([api.experiments(), api.projects()]);
+  let exps = allExps;
   const q = ctx.search;
-  if (q) exps = exps.filter(e => (e.title + ' ' + e.project + ' ' + e.objective).toLowerCase().includes(q));
+  if (q) exps = exps.filter(e => setupSearchText(e).toLowerCase().includes(q));
+  const canCreate = canCreateExperiment(projects);
   root.innerHTML = `
     <div class="between" style="margin-bottom:16px">
       <span class="pill">${exps.length} experiment${exps.length !== 1 ? 's' : ''}</span>
-      <button class="btn" data-new>+ New experiment</button>
+      ${canCreate
+        ? '<button class="btn" data-new>+ New experiment</button>'
+        : '<button class="btn" data-new-disabled disabled title="Read-only project role">+ New experiment</button>'}
     </div>
     ${exps.length ? `<div class="grid cardlist">${exps.map(card).join('')}</div>`
-      : `<div class="empty"><div class="big">⚗</div>${q ? 'No matches.' : 'No experiments yet.'}</div>`}`;
-  root.querySelector('[data-new]').onclick = guard(() => newExperimentModal(ctx));
+      : `<div class="empty"><div class="big">⚗</div>${q ? 'No matches.' : canCreate ? 'No experiments yet.' : 'Read-only project role — no writable experiments yet.'}</div>`}`;
+  const newBtn = root.querySelector('[data-new]');
+  if (newBtn) newBtn.onclick = guard(() => newExperimentModal(ctx, projects.filter(canWriteProject)));
   root.querySelectorAll('[data-exp]').forEach(el => el.onclick = () => ctx.go('experiments', { id: el.dataset.exp }));
 });
 
@@ -29,29 +34,101 @@ function card(e) {
   return `<div class="card hover" data-exp="${e.id}">
     <div class="between"><h3>${esc(e.title)}</h3><span class="status s-${e.status}">${e.status}</span></div>
     <div class="muted" style="font-size:13px">${esc(e.objective || 'No objective set')}</div>
+    ${outcomeStatusHTML(e)}
+    ${experimentTagsHTML(e.tags)}
     <div class="meta"><span class="tag">${esc(e.project_name || e.project || 'General')}</span>
       <span>📝 ${e.entryCount || 0}</span><span>· ${fmtShort(e.created_at)}</span></div></div>`;
 }
 
-async function newExperimentModal(ctx) {
-  const projects = await api.projects();
+function canCreateExperiment(projects) {
+  return (projects || []).some(canWriteProject);
+}
+
+function canWriteProject(p) {
+  return isAdmin() || !!p?.access?.can_write || ['scientist', 'reviewer', 'owner', 'admin'].includes(p?.current_user_project_role);
+}
+
+function experimentAccess(e) {
+  const access = e?.access || {};
+  return {
+    project_role: access.project_role || (isAdmin() ? 'admin' : 'viewer'),
+    can_read: access.can_read !== false,
+    can_write: !!access.can_write || isAdmin(),
+    can_review: !!access.can_review || isAdmin(),
+    can_manage_members: !!access.can_manage_members || isAdmin(),
+    can_admin_delete: !!access.can_admin_delete || isAdmin()
+  };
+}
+
+async function newExperimentModal(ctx, writableProjects = null) {
+  const projects = writableProjects || (await api.projects()).filter(canWriteProject);
+  if (!projects.length) return toast('Read-only project role — ask an owner for scientist access.', true);
+  let templates = [];
+  try {
+    const writableProjectIds = new Set(projects.map(p => p.id));
+    templates = (await api.experimentTemplates()).filter(t => writableProjectIds.has(t.project_id));
+  } catch {}
   modal(`<h3>New experiment</h3>
     <label class="fld">Title</label><input class="txt" id="mTitle" placeholder="e.g. Buffer stability study"/>
     <label class="fld">Project</label><select class="txt" id="mProject">
       ${projects.map(p => `<option value="${esc(p.id)}">${esc(p.name)} · ${esc(p.org_name || 'Workspace')}</option>`).join('')}
     </select>
+    <label class="fld">Use template</label><select class="txt" id="mTemplate">
+      <option value="">Blank experiment</option>
+      ${templates.map(t => `<option value="${esc(t.id)}">${esc(t.name)} · ${esc(t.project_name || 'Project')}</option>`).join('')}
+    </select>
+    <div class="hint" id="mTemplateHint" style="margin-top:6px">Templates fill objective, protocol, materials, success criteria and safety notes.</div>
+    <label class="fld">Tags</label><input class="txt" id="mTags" placeholder="e.g. mRNA, stability, QC"/>
     <label class="fld">Objective</label><textarea class="txt" id="mObj" placeholder="What are you trying to find out?"></textarea>
+    <label class="fld">Hypothesis</label><textarea class="txt compact" id="mHypothesis" placeholder="What result do you expect, and why?"></textarea>
+    <label class="fld">Protocol / method</label><textarea class="txt compact" id="mProtocol" placeholder="Key method steps, instrument settings, or protocol reference"></textarea>
+    <label class="fld">Materials / reagents</label><textarea class="txt compact" id="mMaterials" placeholder="Critical samples, reagent lots, equipment, or cells"></textarea>
+    <label class="fld">Success criteria</label><textarea class="txt compact" id="mSuccessCriteria" placeholder="What result would count as a pass or useful outcome?"></textarea>
+    <label class="fld">Safety notes</label><textarea class="txt compact" id="mSafetyNotes" placeholder="Hazards, PPE, waste handling, or approvals"></textarea>
+    <label class="fld">Experiment outcome</label><select class="txt" id="mOutcomeStatus">
+      ${outcomeStatusOptions('running')}
+    </select>
+    <textarea class="txt compact" id="mOutcomeSummary" placeholder="Summarize the observed result, deviation, or why the run remains in progress"></textarea>
     <div class="row" style="margin-top:16px;justify-content:flex-end">
       <button class="btn ghost" data-x>Cancel</button><button class="btn" data-ok>Create</button></div>`);
   const m = document.getElementById('modal');
   m.querySelector('[data-x]').onclick = closeModal;
+  const templateMap = new Map(templates.map(t => [t.id, t]));
+  m.querySelector('#mTemplate').onchange = () => applyExperimentTemplate(m, templateMap.get(m.querySelector('#mTemplate').value));
   m.querySelector('[data-ok]').onclick = guard(async () => {
     const title = m.querySelector('#mTitle').value.trim();
     if (!title) return toast('Title required', true);
-    const exp = await api.createExperiment({ title, project_id: m.querySelector('#mProject').value, objective: m.querySelector('#mObj').value.trim() });
+    const selectedTemplateId = m.querySelector('#mTemplate').value;
+    const exp = await api.createExperiment({
+      title,
+      project_id: m.querySelector('#mProject').value,
+      template_id: selectedTemplateId,
+      tags: m.querySelector('#mTags').value.trim(),
+      objective: m.querySelector('#mObj').value.trim(),
+      hypothesis: m.querySelector('#mHypothesis').value.trim(),
+      protocol: m.querySelector('#mProtocol').value.trim(),
+      materials: m.querySelector('#mMaterials').value.trim(),
+      success_criteria: m.querySelector('#mSuccessCriteria').value.trim(),
+      safety_notes: m.querySelector('#mSafetyNotes').value.trim(),
+      outcome_status: m.querySelector('#mOutcomeStatus').value,
+      outcome_summary: m.querySelector('#mOutcomeSummary').value.trim()
+    });
     closeModal(); toast('Experiment created'); ctx.go('experiments', { id: exp.id });
   });
   setTimeout(() => m.querySelector('#mTitle').focus(), 40);
+}
+
+function applyExperimentTemplate(modalEl, template) {
+  if (!template) return;
+  modalEl.querySelector('#mProject').value = template.project_id;
+  modalEl.querySelector('#mObj').value = template.objective || '';
+  modalEl.querySelector('#mHypothesis').value = template.hypothesis || '';
+  modalEl.querySelector('#mProtocol').value = template.protocol || '';
+  modalEl.querySelector('#mMaterials').value = template.materials || '';
+  modalEl.querySelector('#mSuccessCriteria').value = template.success_criteria || '';
+  modalEl.querySelector('#mSafetyNotes').value = template.safety_notes || '';
+  const hint = modalEl.querySelector('#mTemplateHint');
+  if (hint) hint.textContent = template.description || 'Template setup applied. Edit any field before creating the experiment.';
 }
 
 /* --------------------------- Single view --------------------------- */
@@ -59,7 +136,12 @@ export const renderExperiment = guard(async (root, ctx, id) => {
   const e = await api.experiment(id);
   ctx.setHead(e.title, `${e.project_name || e.project || 'General'} · created ${fmtShort(e.created_at)}`);
   const locked = e.status === 'locked';
-  const deleteButton = experimentDeleteButton(locked);
+  const access = experimentAccess(e);
+  const canWrite = access.can_write;
+  const canReview = access.can_review;
+  const canEditExperiment = canWrite && !locked;
+  const canReviewExperiment = canReview && !locked;
+  const deleteButton = experimentDeleteButton(locked, access);
   root.innerHTML = `
     <button class="btn ghost sm" data-back>← Back to experiments</button>
     <div class="split" style="margin-top:14px">
@@ -70,42 +152,69 @@ export const renderExperiment = guard(async (root, ctx, id) => {
             ${exportMenu(e.id)}
           </div>
           <div class="muted" style="font-size:13px;margin-top:6px">${esc(e.objective || 'No objective set')}</div>
+          ${experimentTagsHTML(e.tags)}
+          ${experimentSetupHTML(e)}
+          ${experimentOutcomeHTML(e)}
           <div class="row" style="margin-top:12px">
-            <button class="btn sec sm" data-edit>Edit details</button>
-            ${locked ? '<span class="pill">🔒 Locked — read only</span>' : '<button class="btn sec sm" data-observe>👁 Observe run</button><button class="btn ok sm" data-lock>🔒 Lock experiment</button>'}
+            ${canEditExperiment ? '<button class="btn sec sm" data-edit>Edit details</button>' : '<button class="btn sec sm" disabled title="Read-only project role">Edit details</button>'}
+            ${canWrite ? '<button class="btn sec sm" data-save-template>Save as template</button>' : ''}
+            ${locked ? '<span class="pill">🔒 Locked — read only</span>' : canWrite ? '<button class="btn sec sm" data-observe>👁 Observe run</button>' : ''}
+            ${locked ? '' : canReviewExperiment ? '<button class="btn ok sm" data-lock>🔒 Lock experiment</button>' : '<button class="btn ok sm" disabled title="Reviewer role required">🔒 Lock experiment</button>'}
             ${deleteButton}
           </div>
+          ${!canWrite ? '<div class="hint">Read-only project role — you can inspect records and exports, but writing entries requires scientist access.</div>' : ''}
         </div>
-        ${locked ? '' : '<div id="composerMount"></div>'}
+        <div class="card procedure-card" style="margin-top:16px">
+          <div class="between"><h2 class="sec-t" style="margin:0">Procedure steps</h2><button class="btn sm" type="button" data-add-experiment-step>+ Step</button></div>
+          <p class="muted" style="font-size:11px;margin:6px 0 0">Track run actions as a checklist; completed steps stay in the experiment audit trail.</p>
+          <div id="experimentStepsList" style="margin-top:10px"></div>
+        </div>
+        ${canWrite && !locked ? '<div id="composerMount"></div>' : ''}
         <div class="card" style="margin-top:16px">
           <h2 class="sec-t">Notebook entries <span class="muted" style="font-weight:400">(${e.entries.length})</span></h2>
-          <div id="entryFeed">${e.entries.map(en => entryHTML(en, locked)).join('') || '<div class="empty">No entries yet.</div>'}</div>
+          <div id="entryFeed">${e.entries.map(en => entryHTML(en, locked, access)).join('') || '<div class="empty">No entries yet.</div>'}</div>
         </div>
       </div>
-      <div class="card ai-card">
-        <div class="between"><h2 class="sec-t" style="margin:0">🤖 AI assistant</h2><span class="pill" id="aiModel">…</span></div>
-        <p class="muted" style="font-size:11px;margin:6px 0 0">Context-aware help for this experiment. It advises only — it can't change the notebook.</p>
-        <div class="ai-msgs" id="aiMsgs"></div>
-        <div class="ai-input">
-          <textarea class="txt" id="aiText" rows="2" placeholder="Ask about this experiment…"></textarea>
-          <button class="btn" id="aiSend" type="button">Send</button>
+      <div class="experiment-side">
+        <div class="card ai-card">
+          <div class="between"><h2 class="sec-t" style="margin:0">🤖 AI assistant</h2><span class="pill" id="aiModel">…</span></div>
+          <p class="muted" style="font-size:11px;margin:6px 0 0">Context-aware help for this experiment. It advises only — it can't change the notebook.</p>
+          <div class="ai-prompt-bar" id="aiPromptBar"></div>
+          <div class="ai-msgs" id="aiMsgs"></div>
+          <div class="ai-input">
+            <textarea class="txt" id="aiText" rows="2" placeholder="Ask about this experiment…"></textarea>
+            <button class="btn" id="aiSend" type="button">Send</button>
+          </div>
+          <div class="muted" id="aiNote" style="font-size:11px;margin-top:6px"></div>
         </div>
-        <div class="muted" id="aiNote" style="font-size:11px;margin-top:6px"></div>
+        <div class="card">
+          <h2 class="sec-t">Integrity</h2>
+          <p class="muted" style="font-size:12px;margin-top:0">Each entry carries a SHA-256 fingerprint. Signing requires signer confirmation and stores signature meaning for audit-ready records.</p>
+          <div class="hint" style="margin-top:0">Signed: <b>${e.entries.filter(x => x.signed_by).length}/${e.entries.length}</b></div>
+          <div class="hint">Status: <b>${e.status}</b></div>
+        </div>
+        <div class="card">
+          <div class="between"><h2 class="sec-t" style="margin:0">Related experiments</h2><button class="btn sm" type="button" data-add-experiment-link>+ Link</button></div>
+          <p class="muted" style="font-size:11px;margin:6px 0 0">Connect follow-up, repeat, control, or related protocol records.</p>
+          <div id="experimentLinksList" style="margin-top:8px"></div>
+        </div>
+        <div class="card">
+          <div class="between"><h2 class="sec-t" style="margin:0">Attachments</h2><button class="btn sm" type="button" data-add-attachment>Attach file</button></div>
+          <p class="muted" style="font-size:11px;margin:6px 0 0">Attach raw data, instrument exports, PDFs, spreadsheets or supporting files to this experiment.</p>
+          <div id="experimentAttachmentsList" style="margin-top:8px"></div>
+        </div>
+        <div class="card">
+          <div class="between"><h2 class="sec-t" style="margin:0">📚 References</h2><button class="btn sm" id="refAdd">+ Add</button></div>
+          <p class="muted" style="font-size:11px;margin:6px 0 0">Papers linked to this experiment — add by DOI, import BibTeX/RIS (a Zotero or Mendeley export), or pull from a Zotero library.</p>
+          <div id="refList" style="margin-top:8px"></div>
+        </div>
       </div>
-      <div class="card">
-        <h2 class="sec-t">Integrity</h2>
-        <p class="muted" style="font-size:12px;margin-top:0">Each entry carries a SHA-256 fingerprint. Signing requires signer confirmation and stores signature meaning for audit-ready records.</p>
-        <div class="hint" style="margin-top:0">Signed: <b>${e.entries.filter(x => x.signed_by).length}/${e.entries.length}</b></div>
-        <div class="hint">Status: <b>${e.status}</b></div>
-      </div>
-      <div class="card">
-        <div class="between"><h2 class="sec-t" style="margin:0">📚 References</h2><button class="btn sm" id="refAdd">+ Add</button></div>
-        <p class="muted" style="font-size:11px;margin:6px 0 0">Papers linked to this experiment — add by DOI, import BibTeX/RIS (a Zotero or Mendeley export), or pull from a Zotero library.</p>
-        <div id="refList" style="margin-top:8px"></div>
-      </div>
-    </div>`;
+  </div>`;
   root.querySelector('[data-back]').onclick = () => ctx.go('experiments');
-  root.querySelector('[data-edit]').onclick = guard(() => editExperimentModal(ctx, e));
+  const editBtn = root.querySelector('[data-edit]');
+  if (editBtn) editBtn.onclick = guard(() => editExperimentModal(ctx, e));
+  const saveTemplateBtn = root.querySelector('[data-save-template]');
+  if (saveTemplateBtn) saveTemplateBtn.onclick = guard(() => saveExperimentTemplateModal(ctx, e));
   const observeBtn = root.querySelector('[data-observe]');
   if (observeBtn) observeBtn.onclick = () => openObserverMode(e, ctx);
   const lockBtn = root.querySelector('[data-lock]');
@@ -114,13 +223,17 @@ export const renderExperiment = guard(async (root, ctx, id) => {
     guard(async () => { await api.lockExperiment(e.id); toast('Experiment locked'); ctx.go('experiments', { id: e.id }); }));
   wireExportMenu(root);
   wireExperimentDeleteButton(root, ctx, e);
-  wireSignButtons(root, ctx, e.id);
+  wireSignButtons(root, ctx, e.id, access);
   wireDeleteButtons(root, ctx, e.id);
   wireEditEntries(root, ctx, e.id);
+  wireCommentButtons(root, ctx, e.id);
   wireSourceLinks(root);
-  if (!locked) mountComposer(root.querySelector('#composerMount'), ctx, e.id);
-  mountAssistant(root, e);
-  mountReferences(root, e);
+  if (canWrite && !locked) mountComposer(root.querySelector('#composerMount'), ctx, e.id);
+  mountExperimentSteps(root, e, access);
+  mountAssistant(root, e, access);
+  mountExperimentLinks(root, e, access, ctx);
+  mountExperimentAttachments(root, e, access);
+  mountReferences(root, e, access);
 });
 
 function exportMenu(expId) {
@@ -132,6 +245,82 @@ function exportMenu(expId) {
       <a href="${base}?format=html" download>Export HTML</a>
       <a href="${base}" download>Export JSON</a>
     </div>
+  </div>`;
+}
+
+function setupSearchText(e) {
+  return [
+    e.title, e.project, e.project_name, e.objective, e.hypothesis, e.protocol,
+    e.materials, e.success_criteria, e.safety_notes, e.tags,
+    e.outcome_status, outcomeStatusLabel(e.outcome_status), e.outcome_summary
+  ].filter(Boolean).join(' ');
+}
+
+function outcomeStatusLabel(status) {
+  return {
+    running: 'Running',
+    needs_redo: 'Needs redo',
+    success: 'Success',
+    fail: 'Fail',
+    inconclusive: 'Inconclusive'
+  }[String(status || 'running')] || 'Running';
+}
+
+function outcomeStatusClass(status) {
+  return String(status || 'running').replace(/[^a-z0-9_-]/gi, '').toLowerCase() || 'running';
+}
+
+function outcomeStatusOptions(selected = 'running') {
+  return ['running', 'needs_redo', 'success', 'fail', 'inconclusive']
+    .map(status => `<option value="${status}" ${String(selected || 'running') === status ? 'selected' : ''}>${outcomeStatusLabel(status)}</option>`)
+    .join('');
+}
+
+function outcomeStatusHTML(e) {
+  return `<div class="outcome-inline">
+    <span class="outcome-badge outcome-${outcomeStatusClass(e.outcome_status)}">${esc(outcomeStatusLabel(e.outcome_status))}</span>
+  </div>`;
+}
+
+function parseExperimentTags(tags) {
+  return Array.from(new Set(String(tags || '')
+    .split(/[,;]+/)
+    .map(tag => tag.trim())
+    .filter(Boolean)))
+    .slice(0, 12);
+}
+
+function experimentTagsHTML(tags) {
+  const parsed = parseExperimentTags(tags);
+  if (!parsed.length) return '';
+  return `<div class="experiment-tags" aria-label="Experiment tags">${parsed.map(tag => `<span class="experiment-tag">${esc(tag)}</span>`).join('')}</div>`;
+}
+
+function experimentSetupHTML(e) {
+  const items = [
+    ['Hypothesis', e.hypothesis],
+    ['Protocol / method', e.protocol],
+    ['Materials / reagents', e.materials],
+    ['Success criteria', e.success_criteria],
+    ['Safety notes', e.safety_notes]
+  ];
+  return `<div class="study-setup">
+    <div class="study-setup-title">Study setup</div>
+    <div class="study-setup-grid">${items.map(([label, value]) => `
+      <div class="study-setup-item">
+        <div class="study-setup-label">${esc(label)}</div>
+        <div class="study-setup-value">${esc(value || 'Not set')}</div>
+      </div>`).join('')}</div>
+  </div>`;
+}
+
+function experimentOutcomeHTML(e) {
+  return `<div class="outcome-panel">
+    <div class="between">
+      <div class="study-setup-title" style="margin-bottom:0">Experiment outcome</div>
+      ${outcomeStatusHTML(e)}
+    </div>
+    <div class="study-setup-value" style="margin-top:8px">${esc(e.outcome_summary || 'No outcome note yet.')}</div>
   </div>`;
 }
 
@@ -155,8 +344,8 @@ function wireExportMenu(root) {
   });
 }
 
-function experimentDeleteButton(locked) {
-  if (!isAdmin()) {
+function experimentDeleteButton(locked, access = { can_admin_delete: isAdmin() }) {
+  if (!access.can_admin_delete) {
     return '<button class="btn danger sm" type="button" disabled aria-disabled="true" title="Admin only">Delete experiment</button><span class="muted" style="font-size:11px">Admin only</span>';
   }
   if (locked) {
@@ -197,11 +386,282 @@ function wireExperimentDeleteButton(root, ctx, exp) {
   };
 }
 
+/* ------------------------- Procedure steps ------------------------- */
+async function mountExperimentSteps(root, exp, access = experimentAccess(exp)) {
+  const listEl = root.querySelector('#experimentStepsList');
+  const addBtn = root.querySelector('[data-add-experiment-step]');
+  if (!listEl) return;
+  const canEditSteps = access.can_write && exp.status !== 'locked';
+  if (addBtn && !canEditSteps) {
+    addBtn.disabled = true;
+    addBtn.title = exp.status === 'locked' ? 'Locked experiments are read-only' : 'Read-only project role';
+  }
+
+  const load = async () => {
+    listEl.innerHTML = '<div class="muted" style="font-size:12px">Loading...</div>';
+    let steps = [];
+    try { steps = await api.experimentSteps(exp.id); }
+    catch { listEl.innerHTML = '<div class="muted" style="font-size:12px">Failed to load procedure steps.</div>'; return; }
+    const nextStep = steps.find(step => !Number(step.done));
+    listEl.innerHTML = steps.length
+      ? `${nextStep ? `<div class="step-next">Next step: ${esc(nextStep.text)}</div>` : '<div class="step-next done">All procedure steps complete.</div>'}
+        <div class="experiment-step-list">${steps.map(step => experimentStepItem(step, canEditSteps)).join('')}</div>`
+      : '<div class="muted" style="font-size:12px;padding:6px 0">No procedure steps yet.</div>';
+    if (canEditSteps) {
+      listEl.querySelectorAll('[data-toggle-experiment-step]').forEach(input => {
+        input.onchange = guard(async () => {
+          await api.updateExperimentStep(exp.id, input.dataset.toggleExperimentStep, { done: input.checked });
+          toast(input.checked ? 'Step completed' : 'Step reopened');
+          await load();
+        });
+      });
+      listEl.querySelectorAll('[data-delete-experiment-step]').forEach(btn => {
+        btn.onclick = () => confirmModal(
+          'Remove procedure step?',
+          'This removes the step from the active checklist. The audit trail keeps the removal event.',
+          guard(async () => {
+            await api.deleteExperimentStep(exp.id, btn.dataset.deleteExperimentStep);
+            toast('Procedure step removed');
+            await load();
+          }),
+          'Remove'
+        );
+      });
+    }
+  };
+
+  if (addBtn && canEditSteps) addBtn.onclick = () => addExperimentStepModal(exp, load);
+  await load();
+}
+
+function experimentStepItem(step, canEditSteps = true) {
+  const done = Number(step.done) === 1;
+  const meta = done && step.completed_at ? `Completed ${fmtShort(step.completed_at)}${step.completed_by ? ` by ${step.completed_by}` : ''}` : 'Open';
+  return `<div class="experiment-step ${done ? 'done' : ''}">
+    <label class="experiment-step-main">
+      <input type="checkbox" data-toggle-experiment-step="${esc(step.id)}" ${done ? 'checked' : ''} ${canEditSteps ? '' : 'disabled'}/>
+      <span>
+        <span class="experiment-step-text">${esc(step.text)}</span>
+        <span class="experiment-step-meta">${esc(meta)}</span>
+      </span>
+    </label>
+    ${canEditSteps ? `<button class="experiment-step-del" type="button" data-delete-experiment-step="${esc(step.id)}" title="Remove procedure step">Remove</button>` : ''}
+  </div>`;
+}
+
+function addExperimentStepModal(exp, onDone) {
+  modal(`<h3>Add procedure step</h3>
+    <p class="muted" style="font-size:12px;margin-top:0">Add the next action a scientist should perform during this experiment.</p>
+    <label class="fld">Step</label>
+    <textarea class="txt compact" id="experimentStepText" placeholder="e.g. Thaw aliquots on ice and record thaw duration"></textarea>
+    <div class="auth-err" id="experimentStepErr"></div>
+    <div class="row" style="margin-top:16px;justify-content:flex-end">
+      <button class="btn ghost" data-x>Cancel</button>
+      <button class="btn" data-save-experiment-step>Add step</button>
+    </div>`);
+  const m = document.getElementById('modal');
+  m.querySelector('[data-x]').onclick = closeModal;
+  m.querySelector('[data-save-experiment-step]').onclick = guard(async () => {
+    const err = m.querySelector('#experimentStepErr');
+    const text = m.querySelector('#experimentStepText').value.trim();
+    err.textContent = '';
+    if (!text) {
+      err.textContent = 'Step text is required';
+      return;
+    }
+    await api.addExperimentStep(exp.id, { text });
+    closeModal();
+    toast('Procedure step added');
+    await onDone();
+  });
+  setTimeout(() => m.querySelector('#experimentStepText').focus(), 40);
+}
+
+/* ---------------------- Related experiments ---------------------- */
+async function mountExperimentLinks(root, exp, access = experimentAccess(exp), ctx) {
+  const listEl = root.querySelector('#experimentLinksList');
+  const addBtn = root.querySelector('[data-add-experiment-link]');
+  if (!listEl) return;
+  const canEditLinks = access.can_write && exp.status !== 'locked';
+  if (addBtn && !canEditLinks) {
+    addBtn.disabled = true;
+    addBtn.title = exp.status === 'locked' ? 'Locked experiments are read-only' : 'Read-only project role';
+  }
+
+  const load = async () => {
+    listEl.innerHTML = '<div class="muted" style="font-size:12px">Loading...</div>';
+    let links = [];
+    try { links = await api.experimentLinks(exp.id); }
+    catch { listEl.innerHTML = '<div class="muted" style="font-size:12px">Failed to load related experiments.</div>'; return; }
+    listEl.innerHTML = links.length
+      ? links.map(link => experimentLinkItem(link, canEditLinks)).join('')
+      : '<div class="muted" style="font-size:12px;padding:6px 0">No related experiments yet.</div>';
+    listEl.querySelectorAll('[data-open-experiment-link]').forEach(btn => {
+      btn.onclick = () => ctx.go('experiments', { id: btn.dataset.openExperimentLink });
+    });
+    if (canEditLinks) {
+      listEl.querySelectorAll('[data-delete-experiment-link]').forEach(btn => {
+        btn.onclick = () => confirmModal(
+          'Remove related experiment?',
+          'This removes the relationship from this experiment. The linked experiment record is not deleted.',
+          guard(async () => {
+            await api.deleteExperimentLink(exp.id, btn.dataset.deleteExperimentLink);
+            toast('Related experiment removed');
+            await load();
+          }),
+          'Remove'
+        );
+      });
+    }
+  };
+
+  if (addBtn && canEditLinks) addBtn.onclick = () => addExperimentLinkModal(exp, load);
+  await load();
+}
+
+function experimentLinkItem(link, canEditLinks = true) {
+  const meta = [link.linked_project_name || link.linked_project || 'General', link.linked_status].filter(Boolean).join(' | ');
+  return `<div class="experiment-link">
+    <button class="experiment-link-main" type="button" data-open-experiment-link="${esc(link.linked_experiment_id)}">
+      <span class="experiment-link-title">${esc(link.linked_title || 'Untitled experiment')}</span>
+      <span class="experiment-link-meta">${esc(meta)}</span>
+      ${link.note ? `<span class="experiment-link-note">${esc(link.note)}</span>` : ''}
+    </button>
+    ${canEditLinks ? `<button class="experiment-link-del" type="button" data-delete-experiment-link="${esc(link.id)}" title="Remove related experiment">Remove</button>` : ''}
+  </div>`;
+}
+
+async function addExperimentLinkModal(exp, onDone) {
+  const experiments = (await api.experiments()).filter(candidate => candidate.id !== exp.id);
+  if (!experiments.length) return toast('Create another experiment before linking.', true);
+  modal(`<h3>Link experiment</h3>
+    <p class="muted" style="font-size:12px;margin-top:0">Choose an existing experiment to connect as a follow-up, repeat, control, or related protocol record.</p>
+    <label class="fld">Experiment</label>
+    <select class="txt" id="linkedExperimentId">
+      ${experiments.map(candidate => `<option value="${esc(candidate.id)}">${esc(candidate.title)} · ${esc(candidate.project_name || candidate.project || 'General')}</option>`).join('')}
+    </select>
+    <label class="fld">Note <span class="muted">(optional)</span></label>
+    <textarea class="txt compact" id="linkedExperimentNote" placeholder="e.g. Follow-up run using the same setup"></textarea>
+    <div class="auth-err" id="experimentLinkErr"></div>
+    <div class="row" style="margin-top:16px;justify-content:flex-end">
+      <button class="btn ghost" data-x>Cancel</button>
+      <button class="btn" data-save-experiment-link>Link experiment</button>
+    </div>`);
+  const m = document.getElementById('modal');
+  m.querySelector('[data-x]').onclick = closeModal;
+  m.querySelector('[data-save-experiment-link]').onclick = guard(async () => {
+    const err = m.querySelector('#experimentLinkErr');
+    err.textContent = '';
+    await api.addExperimentLink(exp.id, {
+      linkedExperimentId: m.querySelector('#linkedExperimentId').value,
+      note: m.querySelector('#linkedExperimentNote').value.trim()
+    });
+    closeModal();
+    toast('Experiment linked');
+    await onDone();
+  });
+  setTimeout(() => m.querySelector('#linkedExperimentId').focus(), 40);
+}
+
+/* --------------------------- Attachments --------------------------- */
+async function mountExperimentAttachments(root, exp, access = experimentAccess(exp)) {
+  const listEl = root.querySelector('#experimentAttachmentsList');
+  const addBtn = root.querySelector('[data-add-attachment]');
+  if (!listEl) return;
+  const canEditAttachments = access.can_write && exp.status !== 'locked';
+  if (addBtn && !canEditAttachments) {
+    addBtn.disabled = true;
+    addBtn.title = exp.status === 'locked' ? 'Locked experiments are read-only' : 'Read-only project role';
+  }
+
+  const load = async () => {
+    listEl.innerHTML = '<div class="muted" style="font-size:12px">Loading...</div>';
+    let attachments = [];
+    try { attachments = await api.experimentAttachments(exp.id); }
+    catch { listEl.innerHTML = '<div class="muted" style="font-size:12px">Failed to load attachments.</div>'; return; }
+    listEl.innerHTML = attachments.length
+      ? attachments.map(att => attachmentItem(att, canEditAttachments)).join('')
+      : '<div class="muted" style="font-size:12px;padding:6px 0">No attachments yet.</div>';
+    if (canEditAttachments) {
+      listEl.querySelectorAll('[data-delete-attachment]').forEach(btn => {
+        btn.onclick = () => confirmModal(
+          'Remove attachment?',
+          'This removes the file from the active attachment list. The audit trail keeps the file hash and removal event.',
+          guard(async () => {
+            await api.deleteExperimentAttachment(exp.id, btn.dataset.deleteAttachment);
+            toast('Attachment removed');
+            await load();
+          }),
+          'Remove'
+        );
+      });
+    }
+  };
+
+  if (addBtn && canEditAttachments) addBtn.onclick = () => addAttachmentModal(exp, load);
+  await load();
+}
+
+function attachmentItem(att, canEditAttachments = true) {
+  const meta = [formatFileSize(att.size), att.mime_type || 'file', fmtShort(att.uploaded_at)].filter(Boolean).join(' | ');
+  return `<div class="attachment-item">
+    <a class="attachment-main" href="${esc(att.url)}" target="_blank" rel="noopener" download="${esc(att.original_name)}">
+      <span class="attachment-title">${esc(att.original_name || 'attachment')}</span>
+      <span class="attachment-meta">${esc(meta)}</span>
+      ${att.note ? `<span class="attachment-note">${esc(att.note)}</span>` : ''}
+      <span class="attachment-hash">sha256 ${esc(att.hash || '')}</span>
+    </a>
+    ${canEditAttachments ? `<button class="attachment-del" type="button" data-delete-attachment="${esc(att.id)}" title="Remove attachment">Remove</button>` : ''}
+  </div>`;
+}
+
+function addAttachmentModal(exp, onDone) {
+  modal(`<h3>Attach file</h3>
+    <p class="muted" style="font-size:12px;margin-top:0">Upload raw data, instrument output, PDFs, spreadsheets, images or other supporting experiment evidence.</p>
+    <label class="fld">File</label>
+    <input class="txt" id="attachmentFile" type="file"/>
+    <label class="fld">Note <span class="muted">(optional)</span></label>
+    <textarea class="txt compact" id="attachmentNote" placeholder="e.g. Bioanalyzer RIN result table"></textarea>
+    <div class="auth-err" id="attachmentErr"></div>
+    <div class="row" style="margin-top:16px;justify-content:flex-end">
+      <button class="btn ghost" data-x>Cancel</button>
+      <button class="btn" data-save-attachment>Attach file</button>
+    </div>`);
+  const m = document.getElementById('modal');
+  m.querySelector('[data-x]').onclick = closeModal;
+  m.querySelector('[data-save-attachment]').onclick = guard(async () => {
+    const err = m.querySelector('#attachmentErr');
+    err.textContent = '';
+    const file = m.querySelector('#attachmentFile').files?.[0];
+    if (!file) {
+      err.textContent = 'Choose a file to attach';
+      return;
+    }
+    await api.uploadExperimentAttachment(exp.id, file, m.querySelector('#attachmentNote').value.trim());
+    closeModal();
+    toast('Attachment uploaded');
+    await onDone();
+  });
+  setTimeout(() => m.querySelector('#attachmentFile').focus(), 40);
+}
+
+function formatFileSize(size) {
+  const bytes = Number(size) || 0;
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 /* --------------------------- References --------------------------- */
-async function mountReferences(root, exp) {
+async function mountReferences(root, exp, access = experimentAccess(exp)) {
   const listEl = root.querySelector('#refList');
   const addBtn = root.querySelector('#refAdd');
   if (!listEl) return;
+  const canEditRefs = access.can_write && exp.status !== 'locked';
+  if (addBtn && !canEditRefs) {
+    addBtn.disabled = true;
+    addBtn.title = exp.status === 'locked' ? 'Locked experiments are read-only' : 'Read-only project role';
+  }
 
   const load = async () => {
     listEl.innerHTML = '<div class="muted" style="font-size:12px">Loading…</div>';
@@ -209,23 +669,25 @@ async function mountReferences(root, exp) {
     try { refs = await api.references(exp.id); }
     catch { listEl.innerHTML = '<div class="muted" style="font-size:12px">Failed to load references.</div>'; return; }
     listEl.innerHTML = refs.length
-      ? refs.map(refItem).join('')
+      ? refs.map(r => refItem(r, canEditRefs)).join('')
       : '<div class="muted" style="font-size:12px;padding:6px 0">No references yet.</div>';
-    listEl.querySelectorAll('[data-delref]').forEach(b => b.onclick = () => confirmModal('Remove reference?',
-      'This removes the paper from this experiment.',
-      guard(async () => { await api.deleteReference(b.dataset.delref); toast('Reference removed'); load(); }), 'Remove'));
+    if (canEditRefs) {
+      listEl.querySelectorAll('[data-delref]').forEach(b => b.onclick = () => confirmModal('Remove reference?',
+        'This removes the paper from this experiment.',
+        guard(async () => { await api.deleteReference(b.dataset.delref); toast('Reference removed'); load(); }), 'Remove'));
+    }
   };
 
-  addBtn.onclick = () => addReferencesModal(exp, load);
+  if (addBtn && canEditRefs) addBtn.onclick = () => addReferencesModal(exp, load);
   await load();
 }
 
-function refItem(rf) {
+function refItem(rf, canEditRefs = true) {
   const cite = [rf.authors, rf.year ? `(${rf.year})` : ''].filter(Boolean).join(' ');
   const link = rf.url || (rf.doi ? `https://doi.org/${rf.doi}` : '');
   const titleHtml = link ? `<a href="${esc(link)}" target="_blank" rel="noopener">${esc(rf.title)}</a>` : esc(rf.title);
   return `<div class="ref-item">
-    <button class="ref-del" data-delref="${rf.id}" title="Remove">✕</button>
+    ${canEditRefs ? `<button class="ref-del" data-delref="${rf.id}" title="Remove">✕</button>` : ''}
     <div class="ref-title">${titleHtml}</div>
     <div class="ref-meta">${esc(cite) || '—'}${rf.doi ? ' · ' + esc(rf.doi) : ''} <span class="ref-src">${esc(rf.source)}</span></div>
   </div>`;
@@ -300,12 +762,13 @@ function addReferencesModal(exp, onDone) {
 /* --------------------------- AI assistant --------------------------- */
 const aiHistory = new Map(); // experimentId -> [{role, content}]
 
-async function mountAssistant(root, exp) {
+async function mountAssistant(root, exp, access = experimentAccess(exp)) {
   const msgsEl = root.querySelector('#aiMsgs');
   const textEl = root.querySelector('#aiText');
   const sendEl = root.querySelector('#aiSend');
   const noteEl = root.querySelector('#aiNote');
   const modelEl = root.querySelector('#aiModel');
+  const promptBar = root.querySelector('#aiPromptBar');
   if (!msgsEl) return;
   const history = aiHistory.get(exp.id) || [];
   aiHistory.set(exp.id, history);
@@ -316,6 +779,26 @@ async function mountAssistant(root, exp) {
   if (!configured) {
     noteEl.textContent = 'Assistant not configured — set OPENAI_API_KEY in .env to enable.';
     textEl.disabled = true; sendEl.disabled = true;
+  } else if (!access.can_write) {
+    noteEl.textContent = 'Read-only project role — assistant can advise, but drafting and saving entries requires scientist access.';
+  }
+
+  const prompts = assistantPrompts(exp);
+  if (promptBar) {
+    promptBar.innerHTML = prompts.map((p, i) =>
+      `<button class="btn ghost sm" type="button" data-ai-prompt="${i}" title="${esc(p.title)}">${esc(p.label)}</button>`
+    ).join('');
+    promptBar.querySelectorAll('[data-ai-prompt]').forEach(btn => {
+      btn.onclick = () => {
+        const prompt = prompts[Number(btn.dataset.aiPrompt)]?.prompt || '';
+        textEl.disabled = false;
+        textEl.value = prompt;
+        textEl.setSelectionRange(0, 0);
+        textEl.scrollTop = 0;
+        textEl.focus();
+        if (!configured) textEl.disabled = true;
+      };
+    });
   }
 
   const bubble = m => `<div class="ai-msg ${m.role}">${esc(m.content)}</div>`;
@@ -349,7 +832,33 @@ async function mountAssistant(root, exp) {
   textEl.onkeydown = e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } };
 }
 
-function entryHTML(en, locked) {
+function assistantPrompts(exp) {
+  const setupFields = 'objective, hypothesis, protocol, materials, success criteria, safety notes';
+  return [
+    {
+      label: 'Summarize record',
+      title: 'Summarize the current experiment for handover',
+      prompt: `Summarize this experiment record for a lab handover. Use the ${setupFields} and recent notebook entries. Call out missing data and do not invent results.`
+    },
+    {
+      label: 'Check missing setup',
+      title: 'Find missing setup metadata before more lab work',
+      prompt: `Check this experiment for missing setup metadata: ${setupFields}. Prioritize protocol, materials, success criteria, safety notes, sample IDs, reagent lots, and acceptance criteria.`
+    },
+    {
+      label: 'Troubleshoot',
+      title: 'Draft troubleshooting questions from the current context',
+      prompt: `Troubleshoot this experiment using only the current record. Identify likely failure points, controls to verify, and measurements that would reduce uncertainty.`
+    },
+    {
+      label: 'Next steps',
+      title: 'Suggest next experimental actions',
+      prompt: `Suggest the next steps for this experiment. Separate immediate lab actions from documentation updates, and mention any safety or compliance checks that should happen first.`
+    }
+  ];
+}
+
+function entryHTML(en, locked, access = experimentAccess({})) {
   const type = en.signed_by ? 'sig' : en.type;
   const badge = {
     voice: '<span class="badge b-voice">🎙 Voice</span>',
@@ -358,12 +867,16 @@ function entryHTML(en, locked) {
     figure: '<span class="badge b-figure">Figure</span>',
     note: '<span class="badge b-note">Note</span>'
   }[en.type] || '';
-  const canSign = !en.signed_by && !locked && getUser();
-  const canEdit = !en.signed_by && !locked && getUser();
-  const canDelete = isAdmin();
+  const canSign = access.can_write && !en.signed_by && !locked && getUser();
+  const canEdit = access.can_write && !en.signed_by && !locked && getUser();
+  const canComment = access.can_write && !locked && getUser();
+  const canDelete = access.can_admin_delete;
   const deleteButton = canDelete
     ? `<button class="btn danger sm" data-delete-entry="${esc(en.id)}">Delete entry</button>`
     : `<button class="btn danger sm" type="button" disabled aria-disabled="true" title="Admin only">Delete entry</button><span class="muted" style="font-size:11px">Admin only</span>`;
+  const commentButton = canComment
+    ? `<button class="btn sec sm" data-comment-entry="${esc(en.id)}">Add comment</button>`
+    : `<button class="btn sec sm" type="button" disabled aria-disabled="true" title="Comments require write access on an unlocked experiment">Add comment</button>`;
   return `<div class="entry ${type}" id="entry-${esc(en.id)}">
     <div class="eh">${badge}
       <span>🕒 ${fmt(en.created_at)}</span>
@@ -381,11 +894,25 @@ function entryHTML(en, locked) {
     </div>` : ''}
     ${sourceTags(en)}
     ${entryImages(en)}
+    ${entryCommentsHTML(en)}
     <div class="hashline">fingerprint ${en.hash}${en.signed_by ? ` · signed ${fmt(en.signed_at)} · sig ${en.sig}` : ''}</div>
     <div class="row" style="margin-top:8px">
       ${canSign ? `<button class="btn ok sm" data-sign="${en.id}">🔒 Sign &amp; lock entry</button>` : ''}
+      ${commentButton}
       ${deleteButton}
     </div>
+  </div>`;
+}
+
+function entryCommentsHTML(en) {
+  const comments = Array.isArray(en.comments) ? en.comments : [];
+  if (!comments.length) return '';
+  return `<div class="entry-comments" data-entry-comments="${esc(en.id)}">
+    <div class="entry-comments-title">${comments.length} comment${comments.length === 1 ? '' : 's'}</div>
+    ${comments.map(c => `<div class="entry-comment">
+      <div class="entry-comment-meta">${esc(c.author || 'Unknown')}${c.role ? ` (${esc(c.role)})` : ''} · ${fmtShort(c.created_at)}</div>
+      <div>${esc(c.text || '')}</div>
+    </div>`).join('')}
   </div>`;
 }
 
@@ -432,6 +959,29 @@ function wireEditEntries(root, ctx, expId) {
   }));
 }
 
+function wireCommentButtons(root, ctx, expId) {
+  root.querySelectorAll('[data-comment-entry]').forEach(btn => btn.onclick = () => {
+    modal(`<h3>Comment on entry</h3>
+      <p class="muted" style="font-size:12px;margin-top:0">Add a review note, clarification request or handoff comment without changing the entry text.</p>
+      <textarea class="txt" id="entryCommentText" placeholder="Write a comment for this entry"></textarea>
+      <div class="row" style="margin-top:16px;justify-content:flex-end">
+        <button class="btn ghost" data-x>Cancel</button>
+        <button class="btn" data-save-comment>Save comment</button>
+      </div>`);
+    const m = document.getElementById('modal');
+    m.querySelector('[data-x]').onclick = closeModal;
+    m.querySelector('[data-save-comment]').onclick = guard(async () => {
+      const text = m.querySelector('#entryCommentText').value.trim();
+      if (!text) return toast('Comment text is required', true);
+      await api.commentEntry(btn.dataset.commentEntry, { text });
+      closeModal();
+      toast('Comment added');
+      ctx.go('experiments', { id: expId });
+    });
+    setTimeout(() => m.querySelector('#entryCommentText').focus(), 40);
+  });
+}
+
 function wireSourceLinks(root) {
   root.querySelectorAll('[data-source-entry]').forEach(btn => btn.onclick = guard(async () => {
     const target = root.querySelector(`#entry-${CSS.escape(btn.dataset.sourceEntry)}`);
@@ -445,8 +995,9 @@ function wireSourceLinks(root) {
 async function openSourceEntryModal(btn) {
   const en = await api.entry(btn.dataset.sourceEntry);
   const isTranscript = en.type === 'voice_transcript';
+  const isRawOcr = en.type === 'ocr_raw_text';
   modal(`<div class="between">
-      <h3>${isTranscript ? 'Source transcript' : 'Source entry'}</h3>
+      <h3>${isTranscript ? 'Source transcript' : isRawOcr ? 'Raw OCR output' : 'Source entry'}</h3>
       <span class="pill">${esc(en.type || 'entry')}</span>
     </div>
     <textarea class="txt" readonly style="min-height:260px">${esc(en.text || '')}</textarea>
@@ -457,17 +1008,16 @@ async function openSourceEntryModal(btn) {
   document.getElementById('modal').querySelector('[data-x]').onclick = closeModal;
 }
 
-function wireSignButtons(root, ctx, expId) {
+function wireSignButtons(root, ctx, expId, access = experimentAccess({})) {
   root.querySelectorAll('[data-sign]').forEach(b => b.onclick = () => {
     const u = getUser();
     modal(`<h3>Sign &amp; lock entry</h3>
       <p class="muted" style="font-size:12px">By signing, you attest this record is accurate and complete. It will be locked as <b>${esc(u.name || u.email)}</b>.</p>
       <label class="fld">Signature meaning</label>
       <select class="txt" id="sigMeaning">
-        <option value="author">author</option>
-        <option value="reviewer">reviewer</option>
-        <option value="approval">approval</option>
+        ${signatureMeaningOptions(access)}
       </select>
+      ${!access.can_review ? '<div class="hint">Reviewer access required for reviewer or approval signatures.</div>' : ''}
       <label class="fld">Password confirmation</label>
       <input class="txt" id="sigPassword" type="password" autocomplete="current-password" placeholder="Enter your password"/>
       <div class="auth-err" id="sigErr"></div>
@@ -488,6 +1038,15 @@ function wireSignButtons(root, ctx, expId) {
     });
     setTimeout(() => m.querySelector('#sigPassword').focus(), 40);
   });
+}
+
+function signatureMeaningOptions(access = experimentAccess({})) {
+  const reviewerDisabled = access.can_review ? '' : ' disabled title="Reviewer access required"';
+  return [
+    '<option value="author">author</option>',
+    `<option value="reviewer"${reviewerDisabled}>reviewer${access.can_review ? '' : ' (Reviewer access required)'}</option>`,
+    `<option value="approval"${reviewerDisabled}>approval${access.can_review ? '' : ' (Reviewer access required)'}</option>`
+  ].join('');
 }
 
 function wireDeleteButtons(root, ctx, expId) {
@@ -514,13 +1073,24 @@ function wireDeleteButtons(root, ctx, expId) {
 }
 
 async function editExperimentModal(ctx, e) {
-  const projects = await api.projects();
+  const projects = (await api.projects()).filter(canWriteProject);
+  if (!projects.length) return toast('Read-only project role — ask an owner for scientist access.', true);
   modal(`<h3>Edit experiment</h3>
     <label class="fld">Title</label><input class="txt" id="mTitle" value="${esc(e.title)}"/>
     <label class="fld">Project</label><select class="txt" id="mProject">
       ${projects.map(p => `<option value="${esc(p.id)}" ${e.project_id === p.id ? 'selected' : ''}>${esc(p.name)} · ${esc(p.org_name || 'Workspace')}</option>`).join('')}
     </select>
+    <label class="fld">Tags</label><input class="txt" id="mTags" value="${esc(e.tags || '')}" placeholder="e.g. mRNA, stability, QC"/>
     <label class="fld">Objective</label><textarea class="txt" id="mObj">${esc(e.objective)}</textarea>
+    <label class="fld">Hypothesis</label><textarea class="txt compact" id="mHypothesis">${esc(e.hypothesis || '')}</textarea>
+    <label class="fld">Protocol / method</label><textarea class="txt compact" id="mProtocol">${esc(e.protocol || '')}</textarea>
+    <label class="fld">Materials / reagents</label><textarea class="txt compact" id="mMaterials">${esc(e.materials || '')}</textarea>
+    <label class="fld">Success criteria</label><textarea class="txt compact" id="mSuccessCriteria">${esc(e.success_criteria || '')}</textarea>
+    <label class="fld">Safety notes</label><textarea class="txt compact" id="mSafetyNotes">${esc(e.safety_notes || '')}</textarea>
+    <label class="fld">Experiment outcome</label><select class="txt" id="mOutcomeStatus">
+      ${outcomeStatusOptions(e.outcome_status)}
+    </select>
+    <textarea class="txt compact" id="mOutcomeSummary" placeholder="Summarize the observed result, deviation, or why the run remains in progress">${esc(e.outcome_summary || '')}</textarea>
     <label class="fld">Status</label><select class="txt" id="mStat">
       ${['planned', 'active', 'locked'].map(s => `<option ${e.status === s ? 'selected' : ''}>${s}</option>`).join('')}</select>
     <div class="row" style="margin-top:16px;justify-content:flex-end">
@@ -531,16 +1101,51 @@ async function editExperimentModal(ctx, e) {
     await api.updateExperiment(e.id, {
       title: m.querySelector('#mTitle').value.trim() || e.title,
       project_id: m.querySelector('#mProject').value,
+      tags: m.querySelector('#mTags').value.trim(),
       objective: m.querySelector('#mObj').value.trim(),
+      hypothesis: m.querySelector('#mHypothesis').value.trim(),
+      protocol: m.querySelector('#mProtocol').value.trim(),
+      materials: m.querySelector('#mMaterials').value.trim(),
+      success_criteria: m.querySelector('#mSuccessCriteria').value.trim(),
+      safety_notes: m.querySelector('#mSafetyNotes').value.trim(),
+      outcome_status: m.querySelector('#mOutcomeStatus').value,
+      outcome_summary: m.querySelector('#mOutcomeSummary').value.trim(),
       status: m.querySelector('#mStat').value
     });
     closeModal(); toast('Saved'); ctx.go('experiments', { id: e.id });
   });
 }
 
+async function saveExperimentTemplateModal(ctx, e) {
+  modal(`<h3>Experiment template</h3>
+    <p class="muted" style="font-size:12px;margin-top:0">Save this experiment setup as a reusable project template for future runs.</p>
+    <label class="fld">Template name</label><input class="txt" id="templateName" value="${esc(e.title)} template"/>
+    <label class="fld">Description</label><textarea class="txt compact" id="templateDescription" placeholder="When should this setup be reused?"></textarea>
+    <div class="hint" style="margin-top:10px">The template includes objective, hypothesis, protocol, materials, success criteria and safety notes.</div>
+    <div class="row" style="margin-top:16px;justify-content:flex-end">
+      <button class="btn ghost" data-x>Cancel</button><button class="btn" data-save-template-confirm>Save template</button>
+    </div>`);
+  const m = document.getElementById('modal');
+  m.querySelector('[data-x]').onclick = closeModal;
+  m.querySelector('[data-save-template-confirm]').onclick = guard(async () => {
+    const name = m.querySelector('#templateName').value.trim();
+    if (!name) return toast('Template name required', true);
+    await api.saveExperimentTemplate(e.id, {
+      name,
+      description: m.querySelector('#templateDescription').value.trim()
+    });
+    closeModal();
+    toast('Experiment template saved');
+    ctx.go('experiments', { id: e.id });
+  });
+  setTimeout(() => m.querySelector('#templateName').focus(), 40);
+}
+
 /* --------------------------- Composer --------------------------- */
 async function mountComposer(mount, ctx, expId) {
   let capturedType = null, uploadedUrl = null;
+  let rawOcrUrl = null, cleanOcrUrl = null;
+  let rawOcrText = '', correctedOcrText = '';
   let voiceTranscript = '', voiceTemplate = 'auto_lab_note', polishedReady = false, reviewMode = false;
   let recordingStartedAt = 0, recordingTimer = null;
   let stt = { provider: 'webspeech', serverStt: false };
@@ -564,6 +1169,7 @@ async function mountComposer(mount, ctx, expId) {
           <button class="btn sm warn" id="micPause" type="button" style="display:none">⏸ Pause</button>
           <button class="btn sm danger" id="micStop" type="button" style="display:none">⏹ Stop</button>
           <button class="btn ghost sm" id="voiceSourceBtn" type="button" data-voice-source disabled>Source transcript</button>
+          <button class="btn sm sec" id="voiceDraftReport" type="button">Draft report</button>
           <button class="btn sm sec" id="ocrCam" type="button">📸 Camera</button>
           <button class="btn sm sec" id="ocrBtn" type="button">🖼 Upload scan</button>
           <button class="btn sm sec" id="sketchBtn" type="button">Sketch figure</button>
@@ -581,12 +1187,13 @@ async function mountComposer(mount, ctx, expId) {
         <div class="between">
           <div>
             <b>Enhanced entry</b>
-            <div class="muted" style="font-size:12px">Review the AI-polished note before saving it to the experiment.</div>
+            <div class="muted" style="font-size:12px">Review the drafted note before saving it to the experiment.</div>
           </div>
-          <span class="pill">${esc(aiConfigured ? aiModel : 'AI off')}</span>
+          <span class="pill">${esc(aiConfigured ? aiModel : 'Local draft')}</span>
         </div>
         <label class="fld">Format</label>
         <select class="txt" id="voiceTemplate">
+          <option value="lab_report">Lab report</option>
           <option value="auto_lab_note">Auto lab note</option>
           <option value="numbered_observations">Numbered observations</option>
           <option value="concise_paragraph">Concise paragraph</option>
@@ -594,12 +1201,27 @@ async function mountComposer(mount, ctx, expId) {
         <label class="fld">Notebook entry draft</label>
         <textarea class="txt" id="voicePolished"></textarea>
         <div class="row" style="margin-top:8px">
-          <button class="btn sec sm" id="voiceRegenerate" type="button" ${aiConfigured ? '' : 'disabled'}>Regenerate</button>
+          <button class="btn sec sm" id="voiceRegenerate" type="button">Regenerate</button>
           <button class="btn ghost sm" id="voiceBackToCapture" type="button">Back to raw notes</button>
           <button class="btn ghost sm" type="button" data-voice-source>Sources</button>
         </div>
       </div>
       <div id="ocrPreview"></div>
+      <div class="ocr-review" id="ocrReviewWrap" hidden>
+        <div class="between">
+          <div>
+            <b>OCR review</b>
+            <div class="muted" style="font-size:12px">Correct the extracted text before saving it to the experiment.</div>
+          </div>
+          <span class="pill">Review scan</span>
+        </div>
+        <label class="fld">Corrected OCR text</label>
+        <textarea class="txt" id="ocrCorrectedText" placeholder="Correct the OCR output here before saving."></textarea>
+        <details class="ocr-raw-source" open>
+          <summary>Raw OCR output</summary>
+          <textarea class="txt" id="ocrRawText" readonly></textarea>
+        </details>
+      </div>
       <div class="row" style="margin-top:10px">
         <button class="btn" id="saveEntry" type="button" disabled>Save entry</button>
         <button class="btn ghost sm" id="clearEntry" type="button">Clear</button>
@@ -616,14 +1238,23 @@ async function mountComposer(mount, ctx, expId) {
   const templateEl = mount.querySelector('#voiceTemplate');
   const regenerateBtn = mount.querySelector('#voiceRegenerate');
   const backToCaptureBtn = mount.querySelector('#voiceBackToCapture');
+  const voiceDraftReportBtn = mount.querySelector('#voiceDraftReport');
+  const ocrReviewWrap = mount.querySelector('#ocrReviewWrap');
+  const ocrCorrectedEl = mount.querySelector('#ocrCorrectedText');
+  const ocrRawEl = mount.querySelector('#ocrRawText');
   const saveBtn = mount.querySelector('#saveEntry');
   const stateEl = mount.querySelector('#composerState');
   const upd = () => { saveBtn.disabled = !currentSaveText().trim(); };
   text.addEventListener('input', () => { upd(); syncVoiceSourceButtons(); if (!capturedType) capturedType = 'note'; });
   polishedEl.addEventListener('input', () => { polishedReady = !!polishedEl.value.trim(); upd(); });
+  ocrCorrectedEl.addEventListener('input', () => { correctedOcrText = ocrCorrectedEl.value; upd(); });
   templateEl.onchange = guard(async () => {
     voiceTemplate = templateEl.value;
     if (reviewMode && (voiceTranscript.trim() || text.value.trim())) await enhanceVoiceDraft();
+  });
+  voiceDraftReportBtn.onclick = guard(async () => {
+    voiceTemplate = 'lab_report';
+    await enhanceVoiceDraft();
   });
   regenerateBtn.onclick = guard(enhanceVoiceDraft);
   backToCaptureBtn.onclick = () => {
@@ -670,19 +1301,20 @@ async function mountComposer(mount, ctx, expId) {
     const transcript = voiceTranscript.trim();
     const rawNotes = text.value.trim();
     if (!transcript && !rawNotes) return;
-    if (!aiConfigured) { stateEl.textContent = 'AI polishing is not configured'; return; }
     reviewMode = true;
     captureWrap.hidden = true;
     reviewWrap.hidden = false;
     templateEl.value = voiceTemplate;
     polishedEl.disabled = true;
     regenerateBtn.disabled = true;
-    stateEl.textContent = 'Enhancing voice entry…';
+    stateEl.textContent = aiConfigured ? 'Enhancing voice entry…' : 'Drafting local lab report…';
     try {
       const res = await api.processVoiceDraft(expId, transcript, rawNotes, voiceTemplate);
       polishedEl.value = res.output || '';
       polishedReady = !!polishedEl.value.trim();
-      stateEl.textContent = polishedReady ? 'Enhanced draft ready — review & save' : 'No enhanced draft returned';
+      stateEl.textContent = polishedReady
+        ? (res.offline ? 'Local draft ready — review & save' : 'Enhanced draft ready — review & save')
+        : 'No enhanced draft returned';
     } finally {
       polishedEl.disabled = false;
       regenerateBtn.disabled = false;
@@ -691,12 +1323,23 @@ async function mountComposer(mount, ctx, expId) {
   }
   function currentSaveText() {
     if (reviewMode && polishedReady && polishedEl.value.trim()) return polishedEl.value.trim();
+    if (capturedType === 'ocr') {
+      return [text.value.trim(), (correctedOcrText || ocrCorrectedEl.value).trim()]
+        .filter(Boolean)
+        .join('\n\n');
+    }
     if (voiceTranscript.trim()) return buildVoiceFallbackText(text.value, voiceTranscript);
     return text.value.trim();
   }
   function syncVoiceSourceButtons() {
     const hasSource = !!(voiceTranscript.trim() || text.value.trim());
     mount.querySelectorAll('[data-voice-source]').forEach(btn => { btn.disabled = !hasSource; });
+    voiceDraftReportBtn.disabled = !hasSource;
+    voiceDraftReportBtn.title = hasSource
+      ? (aiConfigured
+        ? 'Draft a structured lab report from the current raw notes or transcript'
+        : 'Draft a local structured lab report from the current raw notes or transcript')
+      : 'Add raw notes or capture speech first';
   }
   function startRecordingTimer() {
     if (!recordingStartedAt) recordingStartedAt = Date.now();
@@ -770,14 +1413,30 @@ async function mountComposer(mount, ctx, expId) {
   /* ---- OCR: shared processing for uploaded file or camera capture ---- */
   async function processOcr(dataURL, fileForUpload) {
     capturedType = 'ocr';
-    mount.querySelector('#ocrPreview').innerHTML = `<img class="thumb" src="${dataURL}"/><div class="muted" style="font-size:12px;margin-top:6px" id="ocrStatus">Reading handwriting…</div>`;
+    rawOcrUrl = null; cleanOcrUrl = null; uploadedUrl = null;
+    rawOcrText = ''; correctedOcrText = '';
+    ocrReviewWrap.hidden = true;
+    ocrCorrectedEl.value = '';
+    ocrRawEl.value = '';
+    mount.querySelector('#ocrPreview').innerHTML = `${ocrEvidencePreview(dataURL, null)}<div class="muted" style="font-size:12px;margin-top:6px" id="ocrStatus">Reading handwriting…</div>`;
     stateEl.textContent = 'Running OCR…';
     try {
       const out = await runOCR(dataURL, p => { const s = mount.querySelector('#ocrStatus'); if (s) s.textContent = 'Reading… ' + p + '%'; });
-      text.value = (text.value ? text.value + '\n' : '') + out;
-      const s = mount.querySelector('#ocrStatus'); if (s) s.textContent = out ? '✓ Text extracted — review & save' : 'No text detected — try again';
-      stateEl.textContent = 'OCR complete'; upd();
-      try { uploadedUrl = (await api.uploadImage(fileForUpload)).url; } catch { uploadedUrl = null; }
+      const extracted = typeof out === 'string' ? out : (out.text || '');
+      const processedDataUrl = typeof out === 'string' ? null : out.processedDataUrl;
+      rawOcrText = extracted;
+      correctedOcrText = extracted;
+      ocrCorrectedEl.value = extracted;
+      ocrRawEl.value = extracted || '(no text detected)';
+      ocrReviewWrap.hidden = false;
+      if (processedDataUrl) mount.querySelector('#ocrPreview').innerHTML = `${ocrEvidencePreview(dataURL, processedDataUrl)}<div class="muted" style="font-size:12px;margin-top:6px" id="ocrStatus"></div>`;
+      try { rawOcrUrl = (await api.uploadImage(fileForUpload, fileForUpload?.name || 'raw-ocr-scan.png', 'ocr-raw', expId)).url; } catch { rawOcrUrl = null; }
+      try {
+        if (processedDataUrl) cleanOcrUrl = (await api.uploadImage(dataURLtoBlob(processedDataUrl), 'processed-ocr-scan.png', 'ocr-clean', expId)).url;
+      } catch { cleanOcrUrl = null; }
+      uploadedUrl = cleanOcrUrl || rawOcrUrl;
+      const s = mount.querySelector('#ocrStatus'); if (s) s.textContent = extracted ? '✓ Text extracted — correct & save' : 'No text detected — try again';
+      stateEl.textContent = cleanOcrUrl || rawOcrUrl ? 'OCR complete · image evidence stored' : 'OCR complete · text only'; upd();
     } catch (err) { const s = mount.querySelector('#ocrStatus'); if (s) s.textContent = 'OCR failed: ' + err.message; }
   }
 
@@ -795,7 +1454,10 @@ async function mountComposer(mount, ctx, expId) {
 
   /* ---- Save / clear ---- */
   mount.querySelector('#clearEntry').onclick = () => {
-    text.value = ''; capturedType = null; uploadedUrl = null; recordingStartedAt = 0; resetEnhancedDraft(); setVoiceTranscript('');
+    text.value = ''; capturedType = null; uploadedUrl = null; rawOcrUrl = null; cleanOcrUrl = null; rawOcrText = ''; correctedOcrText = ''; recordingStartedAt = 0; resetEnhancedDraft(); setVoiceTranscript('');
+    ocrCorrectedEl.value = '';
+    ocrRawEl.value = '';
+    ocrReviewWrap.hidden = true;
     mount.querySelector('#ocrPreview').innerHTML = ''; stateEl.textContent = ''; upd();
     if (mount._voice && mount._voice.state !== 'idle') mount._voice.stop();
     if (mount._rec && mount._rec.state !== 'idle') mount._rec.stop();
@@ -804,11 +1466,30 @@ async function mountComposer(mount, ctx, expId) {
   saveBtn.onclick = guard(async () => {
     const val = currentSaveText().trim(); if (!val) return;
     if (mount._voice && mount._voice.state !== 'idle') mount._voice.stop();
-    if (reviewMode && polishedReady && polishedEl.value.trim() && voiceTranscript.trim()) {
+    if (reviewMode && polishedReady && polishedEl.value.trim() && (voiceTranscript.trim() || text.value.trim())) {
       const rawEntry = await api.addEntry(expId, { type: 'voice_transcript', text: buildVoiceSourceText(text.value, voiceTranscript) });
       await api.addEntry(expId, { type: 'voice', text: polishedEl.value.trim(), sourceEntryIds: [rawEntry.id] });
     } else {
-      await api.addEntry(expId, { type: voiceTranscript.trim() ? 'voice' : (capturedType || 'note'), text: val, imageUrl: voiceTranscript.trim() ? null : uploadedUrl });
+      const entryType = voiceTranscript.trim() ? 'voice' : (capturedType || 'note');
+      let payload;
+      if (entryType === 'ocr') {
+        const sourceEntryIds = [];
+        if (rawOcrText.trim()) {
+          const rawEntry = await api.addEntry(expId, { type: 'ocr_raw_text', text: buildOcrSourceText(rawOcrText) });
+          sourceEntryIds.push(rawEntry.id);
+        }
+        payload = {
+          type: entryType,
+          text: val,
+          imageUrl: cleanOcrUrl || rawOcrUrl || uploadedUrl,
+          rawImageUrl: rawOcrUrl,
+          cleanImageUrl: cleanOcrUrl,
+          sourceEntryIds
+        };
+      } else {
+        payload = { type: entryType, text: val, imageUrl: voiceTranscript.trim() ? null : uploadedUrl };
+      }
+      await api.addEntry(expId, payload);
     }
     toast('Entry saved & time-stamped'); ctx.go('experiments', { id: expId });
   });
@@ -822,6 +1503,13 @@ function buildVoiceSourceText(manualNotes, transcript) {
     '',
     'Source transcript:',
     String(transcript || '').trim()
+  ].join('\n');
+}
+
+function buildOcrSourceText(rawText) {
+  return [
+    'Raw OCR output:',
+    String(rawText || '').trim()
   ].join('\n');
 }
 
@@ -870,6 +1558,13 @@ function templateLabel(template) {
   }[template] || 'Auto lab note';
 }
 
+function ocrEvidencePreview(rawSrc, cleanSrc) {
+  return `<div class="ocr-evidence">
+    ${rawSrc ? `<figure><img class="ocr-img raw" src="${esc(rawSrc)}" alt="original notebook scan"/><figcaption>Original scan</figcaption></figure>` : ''}
+    ${cleanSrc ? `<figure><img class="ocr-img" src="${esc(cleanSrc)}" alt="processed OCR scan"/><figcaption>Processed for OCR</figcaption></figure>` : ''}
+  </div>`;
+}
+
 function entryImages(en) {
   if (en.type === 'figure') {
     const clean = en.clean_image_url || en.image_url;
@@ -878,6 +1573,11 @@ function entryImages(en) {
       ${clean ? `<figure><img class="figure-img" src="${esc(clean)}" alt="cleaned scientific diagram"/><figcaption>Clean diagram</figcaption></figure>` : ''}
       ${raw ? `<figure><img class="figure-img raw" src="${esc(raw)}" alt="raw sketch"/><figcaption>Raw sketch</figcaption></figure>` : ''}
     </div>`;
+  }
+  if (en.type === 'ocr') {
+    const clean = en.clean_image_url || en.image_url;
+    const raw = en.raw_image_url || (clean ? null : en.image_url);
+    return ocrEvidencePreview(raw, clean);
   }
   return en.image_url ? `<img class="thumb" src="${esc(en.image_url)}" alt="scan"/>` : '';
 }

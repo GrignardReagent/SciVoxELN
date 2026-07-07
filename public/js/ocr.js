@@ -4,14 +4,14 @@
 export async function runOCR(imageSource, onProgress) {
   if (!window.Tesseract) throw new Error('OCR engine still loading — try again in a moment');
   if (onProgress) onProgress(1, 'preprocessing image');
-  const processed = await preprocessForOCR(imageSource);
-  const res = await window.Tesseract.recognize(processed, 'eng', {
+  const processedDataUrl = await preprocessForOCR(imageSource);
+  const res = await window.Tesseract.recognize(processedDataUrl, 'eng', {
     tessedit_pageseg_mode: '6',
     preserve_interword_spaces: '1',
     user_defined_dpi: '300',
     logger: m => { if (m.status === 'recognizing text' && onProgress) onProgress(Math.round(m.progress * 100)); }
   });
-  return cleanOCRText(res.data.text || '');
+  return { text: cleanOCRText(res.data.text || ''), processedDataUrl };
 }
 
 export function fileToDataURL(file) {
@@ -51,7 +51,7 @@ export function captureFrame(videoEl) {
   });
 }
 
-function dataURLtoBlob(dataURL) {
+export function dataURLtoBlob(dataURL) {
   const [meta, b64] = dataURL.split(',');
   const mime = (meta.match(/:(.*?);/) || [])[1] || 'image/jpeg';
   const bin = atob(b64); const arr = new Uint8Array(bin.length);

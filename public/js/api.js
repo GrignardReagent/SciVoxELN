@@ -49,16 +49,36 @@ export const api = {
   setProjectMember: (id, d) => req('PATCH', `/api/projects/${id}/members`, d),
   // experiments
   experiments: () => req('GET', '/api/experiments'),
+  experimentTemplates: (projectId = '') => req('GET', `/api/experiments/templates${query({ projectId })}`),
   experiment: id => req('GET', `/api/experiments/${id}`),
   createExperiment: d => req('POST', '/api/experiments', d),
   updateExperiment: (id, d) => req('PATCH', `/api/experiments/${id}`, d),
   lockExperiment: id => req('POST', `/api/experiments/${id}/lock`),
   deleteExperiment: (id, d) => req('DELETE', `/api/experiments/${id}`, d),
+  saveExperimentTemplate: (id, d) => req('POST', `/api/experiments/${id}/template`, d),
+  experimentLinks: id => req('GET', `/api/experiments/${id}/links`),
+  addExperimentLink: (id, d) => req('POST', `/api/experiments/${id}/links`, d),
+  deleteExperimentLink: (id, linkId) => req('DELETE', `/api/experiments/${id}/links/${linkId}`),
+  experimentSteps: id => req('GET', `/api/experiments/${id}/steps`),
+  addExperimentStep: (id, d) => req('POST', `/api/experiments/${id}/steps`, d),
+  updateExperimentStep: (id, stepId, d) => req('PATCH', `/api/experiments/${id}/steps/${stepId}`, d),
+  deleteExperimentStep: (id, stepId) => req('DELETE', `/api/experiments/${id}/steps/${stepId}`),
+  experimentAttachments: id => req('GET', `/api/experiments/${id}/attachments`),
+  deleteExperimentAttachment: (id, attachmentId) => req('DELETE', `/api/experiments/${id}/attachments/${attachmentId}`),
+  async uploadExperimentAttachment(id, file, note = '') {
+    const fd = new FormData();
+    fd.append('note', note);
+    fd.append('file', file);
+    const res = await fetch(`/api/experiments/${id}/attachments`, { method: 'POST', body: fd, credentials: 'same-origin' });
+    if (!res.ok) { let m = res.statusText; try { m = (await res.json()).error || m; } catch {} throw new Error(m); }
+    return res.json();
+  },
   addEntry: (id, d) => req('POST', `/api/experiments/${id}/entries`, d),
   // entries
   entries: () => req('GET', '/api/entries'),
   entry: id => req('GET', `/api/entries/${id}`),
   updateEntry: (id, d) => req('PATCH', `/api/entries/${id}`, d),
+  commentEntry: (id, d) => req('POST', `/api/entries/${id}/comments`, d),
   signEntry: (id, d = {}) => req('POST', `/api/entries/${id}/sign`, d),
   deleteEntry: (id, d) => req('DELETE', `/api/entries/${id}`, d),
   batchDeleteEntries: entryIds => req('DELETE', '/api/entries/batch', { entryIds }),
@@ -74,6 +94,10 @@ export const api = {
   createItem: d => req('POST', '/api/inventory', d),
   updateItem: (id, d) => req('PATCH', `/api/inventory/${id}`, d),
   adjustItem: (id, d) => req('POST', `/api/inventory/${id}/adjust`, d),
+  reserveItem: (id, d) => req('POST', `/api/inventory/${id}/reservations`, d),
+  cancelItemReservation: (itemId, reservationId) => req('DELETE', `/api/inventory/${itemId}/reservations/${reservationId}`),
+  inventoryAvailability: (id, params = {}) => req('GET', `/api/inventory/${id}/availability${query(params)}`),
+  inventoryCalendarToken: id => req('POST', `/api/inventory/${id}/calendar-token`),
   deleteItem: id => req('DELETE', `/api/inventory/${id}`),
   // audit + stt + ai
   audit: (params = {}) => req('GET', `/api/audit${query(params)}`),

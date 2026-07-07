@@ -8,6 +8,13 @@ making changes.
 > is the source of truth for active tasks, backlog, done work, change log, and
 > historical session notes.
 
+> **Browser verification is mandatory:** always check the running frontend in a
+> real browser before the final response for every task in this repo, including
+> backend-only, docs-only, config, test, and process changes. Exercise the
+> changed flow when there is one; otherwise load the app, verify it renders,
+> inspect console/page state, and report any browser-tool blocker instead of
+> calling the frontend verified.
+
 ## What this is
 
 A voice- and vision-powered **Electronic Lab Notebook**. Full-stack web app,
@@ -139,13 +146,31 @@ docker compose up --build       # containerised
 
 Backend is testable headless with curl (see git history / prior sessions):
 create experiment → add entry → lock (expect 409) → sign → inventory adjust →
-plan start → audit CSV. **Frontend changes must always be checked in a real
-browser before claiming completion.** Open the app in Chrome/Edge and exercise
-the changed flow, including at least one meaningful interaction and screenshot
-evidence. Prefer Computer Use when the user requests it or it is available; if
-Computer Use cannot bootstrap, use Playwright/Chromium and record the fallback
-reason. Use a disposable `DATA_DIR` for smoke checks that create users, entries
-or other lab data. Frontend voice/OCR need a real browser.
+plan start → audit CSV. Frontend voice/OCR need a real browser.
+
+### Mandatory browser verification
+
+Always open the running app and check the frontend in a real browser before
+claiming completion for any work in this repo. Treat this as a hard completion
+gate, not an optional extra, and do it even when the change appears unrelated to
+the frontend. For frontend-affecting or user-facing work, exercise the changed
+flow. For backend, config, docs, tests, or process-only work, still make a
+lightweight browser pass: load the app, confirm it renders the expected screen,
+inspect console/page state, and note the result. This applies to tiny copy,
+HTML, CSS, client JS, frontend-facing API responses, auth/navigation flows,
+rendered data shape, theming, voice/OCR/AI panels, responsive layout, and
+anything that could change what a user sees, clicks, enters, uploads, signs,
+archives, restores, or exports. Do not rely on static tests, API tests,
+screenshots from old sessions, or code inspection alone.
+
+Use Chrome/Edge with Computer Use when the user requests it or when it is
+available. If Computer Use cannot bootstrap, use Playwright/Chromium as the
+fallback and record the reason. Exercise the changed flow with at least one
+meaningful interaction, verify page identity, non-blank render, responsive
+behavior where relevant, and no relevant console errors, then include the
+browser tool/fallback, URL, viewport, result, and screenshot paths in the final
+report. Use a disposable `DATA_DIR` for smoke checks that create users, entries
+or other lab data.
 
 ## Sandbox / environment gotchas (important for AI sessions)
 
@@ -160,11 +185,9 @@ or other lab data. Frontend voice/OCR need a real browser.
   silences it (set in Dockerfile).
 - WAL fails on some sandbox/network filesystems ("disk I/O error"); the fallback
   handles it. Use a local ext4 path (e.g. `/tmp`) when testing.
-- For any change touching `public/`, frontend-facing routes, auth/navigation
-  flows, theming, voice/OCR/AI panels, or UI copy, run a rendered browser smoke
-  test in addition to Node tests. Verify page identity, non-blank render, no
-  relevant console errors, and the target interaction. Include the browser URL,
-  viewport, result and screenshot paths in the final report.
+- The browser verification rule above is mandatory. If no browser can be opened,
+  do not describe the frontend work as fully verified; report the blocker and
+  the non-browser checks that did run.
 
 ## Conventions
 

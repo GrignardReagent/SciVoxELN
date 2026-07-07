@@ -56,14 +56,56 @@ test('MVP pilot workflow: projects, access, signatures, exports, audit and sessi
     const exp = await admin.req(base, 'POST', '/api/experiments', {
       project_id: project.id,
       title: 'mRNA stability screen',
-      objective: 'Assess stability after freeze-thaw.'
+      objective: 'Assess stability after freeze-thaw.',
+      hypothesis: 'Freeze-thaw cycles reduce mRNA integrity.',
+      protocol: 'Aliquot formulation, run three freeze-thaw cycles, then measure RIN.',
+      materials: 'LNP batch LN-042; PBS pH 7.4; RNase-free tubes.',
+      success_criteria: 'RIN stays above 8.0 after three cycles.',
+      safety_notes: 'Use RNase decontamination and dry-ice gloves.',
+      tags: 'mRNA, freeze-thaw, QC'
     });
     assert.equal(exp.project_id, project.id);
+    assert.equal(exp.hypothesis, 'Freeze-thaw cycles reduce mRNA integrity.');
+    assert.equal(exp.protocol, 'Aliquot formulation, run three freeze-thaw cycles, then measure RIN.');
+    assert.equal(exp.materials, 'LNP batch LN-042; PBS pH 7.4; RNase-free tubes.');
+    assert.equal(exp.success_criteria, 'RIN stays above 8.0 after three cycles.');
+    assert.equal(exp.safety_notes, 'Use RNase decontamination and dry-ice gloves.');
+    assert.equal(exp.tags, 'mRNA, freeze-thaw, QC');
+    assert.equal(exp.outcome_status, 'running');
+    assert.equal(exp.outcome_summary, '');
 
     const viewed = await scientist.req(base, 'GET', `/api/experiments/${exp.id}`);
     assert.equal(viewed.title, exp.title);
+    assert.equal(viewed.hypothesis, exp.hypothesis);
+    assert.equal(viewed.protocol, exp.protocol);
+    assert.equal(viewed.materials, exp.materials);
+    assert.equal(viewed.success_criteria, exp.success_criteria);
+    assert.equal(viewed.safety_notes, exp.safety_notes);
+    assert.equal(viewed.tags, exp.tags);
+    assert.equal(viewed.outcome_status, 'running');
+    assert.equal(viewed.outcome_summary, '');
     await assert.rejects(
       () => scientist.req(base, 'POST', `/api/experiments/${exp.id}/entries`, { type: 'note', text: 'viewer cannot write' }),
+      /403/
+    );
+    await assert.rejects(
+      () => scientist.req(base, 'POST', '/api/references', { experimentId: exp.id, title: 'Viewer should not add references' }),
+      /403/
+    );
+    await assert.rejects(
+      () => scientist.uploadImage(base, tinyPng(), 'viewer-ocr-upload.png', 'ocr-raw', exp.id),
+      /403/
+    );
+    await assert.rejects(
+      () => scientist.uploadAttachment(base, Buffer.from('viewer raw data'), 'viewer-data.csv', 'text/csv', exp.id),
+      /403/
+    );
+    await assert.rejects(
+      () => scientist.req(base, 'POST', `/api/experiments/${exp.id}/steps`, { text: 'Viewer should not add steps' }),
+      /403/
+    );
+    await assert.rejects(
+      () => scientist.req(base, 'POST', `/api/experiments/${exp.id}/template`, { name: 'Viewer template attempt' }),
       /403/
     );
     await assert.rejects(
@@ -81,11 +123,142 @@ test('MVP pilot workflow: projects, access, signatures, exports, audit and sessi
       role: 'scientist'
     });
 
+    const updatedSetup = await scientist.req(base, 'PATCH', `/api/experiments/${exp.id}`, {
+      hypothesis: 'Three cycles are tolerated when thaw duration stays below five minutes.',
+      protocol: 'Run three controlled freeze-thaw cycles, record thaw duration, then measure RIN.',
+      materials: 'LNP batch LN-042; PBS pH 7.4; RNase-free tubes; Bioanalyzer chip.',
+      success_criteria: 'RIN above 8.0 and no visible aggregation.',
+      safety_notes: 'Wear cryogenic gloves and keep RNaseZap available.',
+      tags: 'mRNA, freeze-thaw, reviewer-ready',
+      outcome_status: 'success',
+      outcome_summary: 'RIN remained above threshold after three cycles.'
+    });
+    assert.equal(updatedSetup.hypothesis, 'Three cycles are tolerated when thaw duration stays below five minutes.');
+    assert.equal(updatedSetup.protocol, 'Run three controlled freeze-thaw cycles, record thaw duration, then measure RIN.');
+    assert.equal(updatedSetup.materials, 'LNP batch LN-042; PBS pH 7.4; RNase-free tubes; Bioanalyzer chip.');
+    assert.equal(updatedSetup.success_criteria, 'RIN above 8.0 and no visible aggregation.');
+    assert.equal(updatedSetup.safety_notes, 'Wear cryogenic gloves and keep RNaseZap available.');
+    assert.equal(updatedSetup.tags, 'mRNA, freeze-thaw, reviewer-ready');
+    assert.equal(updatedSetup.outcome_status, 'success');
+    assert.equal(updatedSetup.outcome_summary, 'RIN remained above threshold after three cycles.');
+
+    const template = await scientist.req(base, 'POST', `/api/experiments/${exp.id}/template`, {
+      name: 'mRNA freeze-thaw setup',
+      description: 'Reusable validated setup for follow-up stability screens.'
+    });
+    assert.equal(template.name, 'mRNA freeze-thaw setup');
+    assert.equal(template.project_id, project.id);
+    assert.equal(template.protocol, updatedSetup.protocol);
+    assert.equal(template.materials, updatedSetup.materials);
+
+    const templates = await scientist.req(base, 'GET', `/api/experiments/templates?projectId=${project.id}`);
+    assert.equal(templates.some(t => t.id === template.id), true);
+
+    const templatedExp = await scientist.req(base, 'POST', '/api/experiments', {
+      project_id: project.id,
+      title: 'mRNA stability follow-up from template',
+      template_id: template.id
+    });
+    assert.equal(templatedExp.objective, updatedSetup.objective);
+    assert.equal(templatedExp.hypothesis, updatedSetup.hypothesis);
+    assert.equal(templatedExp.protocol, updatedSetup.protocol);
+    assert.equal(templatedExp.materials, updatedSetup.materials);
+    assert.equal(templatedExp.success_criteria, updatedSetup.success_criteria);
+    assert.equal(templatedExp.safety_notes, updatedSetup.safety_notes);
+
+    const relatedLink = await scientist.req(base, 'POST', `/api/experiments/${exp.id}/links`, {
+      linkedExperimentId: templatedExp.id,
+      note: 'Follow-up run created from the reusable setup.'
+    });
+    assert.equal(relatedLink.experiment_id, exp.id);
+    assert.equal(relatedLink.linked_experiment_id, templatedExp.id);
+    assert.equal(relatedLink.linked_title, templatedExp.title);
+    assert.equal(relatedLink.note, 'Follow-up run created from the reusable setup.');
+    const relatedLinks = await scientist.req(base, 'GET', `/api/experiments/${exp.id}/links`);
+    assert.equal(relatedLinks.length, 1);
+    assert.equal(relatedLinks[0].id, relatedLink.id);
+    await assert.rejects(
+      () => scientist.req(base, 'POST', `/api/experiments/${exp.id}/links`, { linkedExperimentId: exp.id }),
+      /400/
+    );
+    await assert.rejects(
+      () => scientist.req(base, 'POST', `/api/experiments/${exp.id}/links`, { linkedExperimentId: templatedExp.id }),
+      /409/
+    );
+    const removableLink = await scientist.req(base, 'POST', `/api/experiments/${templatedExp.id}/links`, {
+      linkedExperimentId: exp.id,
+      note: 'Temporary reverse link.'
+    });
+    await scientist.req(base, 'DELETE', `/api/experiments/${templatedExp.id}/links/${removableLink.id}`);
+    const clearedLinks = await scientist.req(base, 'GET', `/api/experiments/${templatedExp.id}/links`);
+    assert.equal(clearedLinks.some(l => l.id === removableLink.id), false);
+
+    const stepOne = await scientist.req(base, 'POST', `/api/experiments/${exp.id}/steps`, {
+      text: 'Thaw aliquots on ice and record thaw duration.'
+    });
+    assert.equal(stepOne.experiment_id, exp.id);
+    assert.equal(stepOne.text, 'Thaw aliquots on ice and record thaw duration.');
+    assert.equal(stepOne.done, 0);
+    assert.equal(stepOne.position, 1);
+    const stepTwo = await scientist.req(base, 'POST', `/api/experiments/${exp.id}/steps`, {
+      text: 'Run Bioanalyzer and attach RIN table.'
+    });
+    assert.equal(stepTwo.position, 2);
+    const listedSteps = await scientist.req(base, 'GET', `/api/experiments/${exp.id}/steps`);
+    assert.deepEqual(listedSteps.map(step => step.text), [
+      'Thaw aliquots on ice and record thaw duration.',
+      'Run Bioanalyzer and attach RIN table.'
+    ]);
+    const completedStep = await scientist.req(base, 'PATCH', `/api/experiments/${exp.id}/steps/${stepOne.id}`, {
+      done: true
+    });
+    assert.equal(completedStep.done, 1);
+    assert.ok(completedStep.completed_at);
+    assert.equal(completedStep.completed_by, 'Scientist');
+    await scientist.req(base, 'DELETE', `/api/experiments/${exp.id}/steps/${stepTwo.id}`);
+    const stepsAfterRemove = await scientist.req(base, 'GET', `/api/experiments/${exp.id}/steps`);
+    assert.equal(stepsAfterRemove.some(step => step.id === stepTwo.id), false);
+
+    const setupAwareChat = await scientist.req(base, 'POST', '/api/ai/chat', {
+      experimentId: exp.id,
+      messages: [{ role: 'user', content: 'context-audit' }]
+    });
+    assert.match(setupAwareChat.reply, /hypothesis yes/);
+    assert.match(setupAwareChat.reply, /protocol yes/);
+    assert.match(setupAwareChat.reply, /materials yes/);
+    assert.match(setupAwareChat.reply, /success yes/);
+    assert.match(setupAwareChat.reply, /safety yes/);
+    assert.match(setupAwareChat.reply, /outcome yes/);
+
+    const manualRef = await scientist.req(base, 'POST', '/api/references', {
+      experimentId: exp.id,
+      title: 'Reference added by project scientist',
+      authors: 'Curie M',
+      year: '1911'
+    });
+    assert.equal(manualRef.title, 'Reference added by project scientist');
+
     const entry = await scientist.req(base, 'POST', `/api/experiments/${exp.id}/entries`, {
       type: 'note',
       text: 'Prepared formulation A and recorded visual clarity.'
     });
     assert.match(entry.hash, /^[a-f0-9]{64}$/);
+
+    const comment = await scientist.req(base, 'POST', `/api/entries/${entry.id}/comments`, {
+      text: 'Please confirm thaw duration before reviewer approval.'
+    });
+    assert.equal(comment.entry_id, entry.id);
+    assert.equal(comment.text, 'Please confirm thaw duration before reviewer approval.');
+    assert.equal(comment.author, 'Scientist');
+    await assert.rejects(
+      () => scientist.req(base, 'POST', `/api/entries/${entry.id}/comments`, { text: '   ' }),
+      /400/
+    );
+
+    const expWithComment = await scientist.req(base, 'GET', `/api/experiments/${exp.id}`);
+    const entryWithComment = expWithComment.entries.find(en => en.id === entry.id);
+    assert.equal(entryWithComment.comments.length, 1);
+    assert.equal(entryWithComment.comments[0].text, comment.text);
 
     const edited = await scientist.req(base, 'PATCH', `/api/entries/${entry.id}`, {
       text: 'Prepared formulation A and recorded visual clarity after thaw.'
@@ -149,6 +322,19 @@ test('MVP pilot workflow: projects, access, signatures, exports, audit and sessi
     assert.match(autoDraft.output, /Deviations\/Uncertainty\n- Yield was unclear\./);
     assert.doesNotMatch(autoDraft.output, /Next Actions\n\s*(?:\n|$)/);
 
+    const reportDraft = await scientist.req(base, 'POST', '/api/ai/process-voice-draft', {
+      experimentId: exp.id,
+      transcript: 'Aliquoted sample D4 and added 20 ul enzyme mix. Incubated for 30 minutes at 37 C. Absorbance increased to 0.82 but replicate two was uncertain.',
+      rawNotes: 'D4 endpoint report; preserve replicate uncertainty',
+      template: 'lab_report'
+    });
+    assert.equal(reportDraft.template, 'lab_report');
+    assert.equal(reportDraft.style, 'lab_report');
+    assert.match(reportDraft.output, /^Objective\n/);
+    assert.match(reportDraft.output, /Method\n- Added 20 ul enzyme mix to sample D4\./);
+    assert.match(reportDraft.output, /Results \/ Observations\n- Absorbance increased to 0\.82\./);
+    assert.match(reportDraft.output, /Deviations \/ Uncertainty\n- Replicate two was uncertain\./);
+
     await assert.rejects(
       () => scientist.req(base, 'POST', '/api/ai/process-voice-draft', {
         experimentId: exp.id,
@@ -187,6 +373,36 @@ test('MVP pilot workflow: projects, access, signatures, exports, audit and sessi
     assert.match(rawUpload.url, new RegExp(`^/uploads/figures/${exp.id}/raw/`));
     assert.match(cleanUpload.url, new RegExp(`^/uploads/figures/${exp.id}/clean/`));
 
+    const attachment = await scientist.uploadAttachment(
+      base,
+      Buffer.from('time,rin\n0,9.1\n24,8.7\n'),
+      'rin-results.csv',
+      'text/csv',
+      exp.id,
+      'Bioanalyzer RIN result table.'
+    );
+    assert.equal(attachment.experiment_id, exp.id);
+    assert.equal(attachment.original_name, 'rin-results.csv');
+    assert.equal(attachment.mime_type, 'text/csv');
+    assert.equal(attachment.note, 'Bioanalyzer RIN result table.');
+    assert.match(attachment.hash, /^[a-f0-9]{64}$/);
+    assert.match(attachment.url, new RegExp(`^/uploads/attachments/${exp.id}/`));
+    const listedAttachments = await scientist.req(base, 'GET', `/api/experiments/${exp.id}/attachments`);
+    assert.equal(listedAttachments.some(a => a.id === attachment.id), true);
+    const attachmentDownload = await scientist.raw(base, 'GET', attachment.url);
+    assert.equal(attachmentDownload.body.toString('utf8'), 'time,rin\n0,9.1\n24,8.7\n');
+    const removableAttachment = await scientist.uploadAttachment(
+      base,
+      Buffer.from('temporary attachment'),
+      'temporary.txt',
+      'text/plain',
+      exp.id,
+      'Remove after upload test.'
+    );
+    await scientist.req(base, 'DELETE', `/api/experiments/${exp.id}/attachments/${removableAttachment.id}`);
+    const afterAttachmentRemove = await scientist.req(base, 'GET', `/api/experiments/${exp.id}/attachments`);
+    assert.equal(afterAttachmentRemove.some(a => a.id === removableAttachment.id), false);
+
     const figure = await scientist.req(base, 'POST', `/api/experiments/${exp.id}/entries`, {
       type: 'figure',
       text: 'Microscope slide layout with sample regions A-D.',
@@ -197,6 +413,33 @@ test('MVP pilot workflow: projects, access, signatures, exports, audit and sessi
     assert.equal(figure.type, 'figure');
     assert.equal(figure.raw_image_url, rawUpload.url);
     assert.equal(figure.clean_image_url, cleanUpload.url);
+
+    const rawOcrUpload = await scientist.uploadImage(base, tinyPng(), 'raw-notebook-scan.png', 'ocr-raw', exp.id);
+    const cleanOcrUpload = await scientist.uploadImage(base, tinyPng(), 'processed-notebook-scan.png', 'ocr-clean', exp.id);
+    assert.match(rawOcrUpload.url, new RegExp(`^/uploads/ocr/${exp.id}/raw/`));
+    assert.match(cleanOcrUpload.url, new RegExp(`^/uploads/ocr/${exp.id}/clean/`));
+
+    const rawOcrTextEntry = await scientist.req(base, 'POST', `/api/experiments/${exp.id}/entries`, {
+      type: 'ocr_raw_text',
+      text: 'Raw OCR output:\npH after incubation was 7.Z; sampl A1 remained cl0udy.'
+    });
+    assert.equal(rawOcrTextEntry.type, 'ocr_raw_text');
+
+    const ocrEntry = await scientist.req(base, 'POST', `/api/experiments/${exp.id}/entries`, {
+      type: 'ocr',
+      text: 'pH after incubation was 7.2; sample A1 remained cloudy.',
+      imageUrl: cleanOcrUpload.url,
+      rawImageUrl: rawOcrUpload.url,
+      cleanImageUrl: cleanOcrUpload.url,
+      sourceEntryIds: [rawOcrTextEntry.id]
+    });
+    assert.equal(ocrEntry.type, 'ocr');
+    assert.equal(ocrEntry.raw_image_url, rawOcrUpload.url);
+    assert.equal(ocrEntry.clean_image_url, cleanOcrUpload.url);
+    assert.deepEqual(JSON.parse(ocrEntry.source_entry_ids), [rawOcrTextEntry.id]);
+    const expWithOcrSource = await scientist.req(base, 'GET', `/api/experiments/${exp.id}`);
+    assert.equal(expWithOcrSource.entries.some(en => en.id === rawOcrTextEntry.id), false);
+    assert.equal(expWithOcrSource.entries.some(en => en.id === ocrEntry.id), true);
 
     const singleDeleteEntry = await scientist.req(base, 'POST', `/api/experiments/${exp.id}/entries`, {
       type: 'note',
@@ -252,6 +495,14 @@ test('MVP pilot workflow: projects, access, signatures, exports, audit and sessi
 
     await admin.req(base, 'POST', `/api/experiments/${exp.id}/lock`);
     await assert.rejects(
+      () => scientist.req(base, 'PATCH', `/api/experiments/${exp.id}`, { status: 'active', objective: 'unlock attempt' }),
+      /409/
+    );
+    await assert.rejects(
+      () => scientist.req(base, 'PATCH', `/api/experiments/${exp.id}`, { outcome_status: 'fail', outcome_summary: 'post-lock result edit' }),
+      /409/
+    );
+    await assert.rejects(
       () => scientist.req(base, 'POST', `/api/experiments/${exp.id}/entries`, { type: 'note', text: 'after lock' }),
       /409/
     );
@@ -259,21 +510,110 @@ test('MVP pilot workflow: projects, access, signatures, exports, audit and sessi
       () => scientist.req(base, 'POST', `/api/experiments/${exp.id}/entries`, { type: 'voice_transcript', text: 'after lock transcript' }),
       /409/
     );
+    await assert.rejects(
+      () => scientist.req(base, 'POST', `/api/entries/${entry.id}/comments`, { text: 'after lock comment' }),
+      /409/
+    );
+    await assert.rejects(
+      () => scientist.req(base, 'POST', '/api/references', { experimentId: exp.id, title: 'Reference after lock' }),
+      /409/
+    );
+    await assert.rejects(
+      () => scientist.req(base, 'POST', `/api/experiments/${exp.id}/links`, { linkedExperimentId: templatedExp.id }),
+      /409/
+    );
+    await assert.rejects(
+      () => scientist.req(base, 'POST', `/api/experiments/${exp.id}/steps`, { text: 'Step after lock' }),
+      /409/
+    );
+    await assert.rejects(
+      () => scientist.req(base, 'PATCH', `/api/experiments/${exp.id}/steps/${stepOne.id}`, { done: false }),
+      /409/
+    );
+    await assert.rejects(
+      () => scientist.req(base, 'DELETE', `/api/experiments/${exp.id}/steps/${stepOne.id}`),
+      /409/
+    );
+    await assert.rejects(
+      () => scientist.uploadImage(base, tinyPng(), 'locked-ocr-upload.png', 'ocr-raw', exp.id),
+      /409/
+    );
+    await assert.rejects(
+      () => scientist.uploadAttachment(base, Buffer.from('locked data'), 'locked-data.csv', 'text/csv', exp.id),
+      /409/
+    );
 
     const exported = await admin.req(base, 'GET', `/api/experiments/${exp.id}/export`);
     assert.equal(exported.experiment.id, exp.id);
+    assert.equal(exported.experiment.tags, 'mRNA, freeze-thaw, reviewer-ready');
+    assert.equal(exported.experiment.outcome_status, 'success');
+    assert.equal(exported.experiment.outcome_summary, 'RIN remained above threshold after three cycles.');
+    assert.equal(exported.experiment_links[0].linked_experiment_id, templatedExp.id);
+    assert.equal(exported.experiment_links[0].note, 'Follow-up run created from the reusable setup.');
+    assert.equal(exported.steps[0].text, 'Thaw aliquots on ice and record thaw duration.');
+    assert.equal(exported.steps[0].done, 1);
+    assert.equal(exported.attachments[0].original_name, 'rin-results.csv');
+    assert.equal(exported.attachments[0].note, 'Bioanalyzer RIN result table.');
     assert.match(exported.integrity.sha256, /^[a-f0-9]{64}$/);
     assert.ok(exported.experiment.entries.some(en => en.id === rawVoice.id));
+    assert.equal(exported.experiment.entries.find(en => en.id === entry.id).comments[0].text, comment.text);
     const exportedPdf = await admin.raw(base, 'GET', `/api/experiments/${exp.id}/export?format=pdf`);
     assert.equal(exportedPdf.status, 200);
     assert.match(exportedPdf.headers['content-type'], /application\/pdf/);
     assert.match(exportedPdf.headers['content-disposition'], /mrna-stability-screen-export\.pdf/);
     assert.equal(exportedPdf.body.subarray(0, 5).toString(), '%PDF-');
     assert.ok(exportedPdf.body.includes(Buffer.from('mRNA stability screen')));
+    assert.ok(exportedPdf.body.includes(Buffer.from('mRNA, freeze-thaw, reviewer-ready')));
+    assert.ok(exportedPdf.body.includes(Buffer.from('Related Experiments')));
+    assert.ok(exportedPdf.body.includes(Buffer.from('mRNA stability follow-up from template')));
+    assert.ok(exportedPdf.body.includes(Buffer.from('Procedure Steps')));
+    assert.ok(exportedPdf.body.includes(Buffer.from('Thaw aliquots on ice and record thaw duration.')));
+    assert.ok(exportedPdf.body.includes(Buffer.from('Attachments')));
+    assert.ok(exportedPdf.body.includes(Buffer.from('rin-results.csv')));
+    assert.ok(exportedPdf.body.includes(Buffer.from('Three cycles are tolerated when thaw duration stays below five minutes.')));
+    assert.ok(exportedPdf.body.includes(Buffer.from('Outcome')));
+    assert.ok(exportedPdf.body.includes(Buffer.from('RIN remained above threshold after three cycles.')));
+    const exportedHtml = await admin.raw(base, 'GET', `/api/experiments/${exp.id}/export?format=html`);
+    assert.equal(exportedHtml.status, 200);
+    assert.match(exportedHtml.headers['content-type'], /text\/html/);
+    assert.ok(exportedHtml.body.includes(Buffer.from('Study setup')));
+    assert.ok(exportedHtml.body.includes(Buffer.from('mRNA, freeze-thaw, reviewer-ready')));
+    assert.ok(exportedHtml.body.includes(Buffer.from('Related Experiments')));
+    assert.ok(exportedHtml.body.includes(Buffer.from('Follow-up run created from the reusable setup.')));
+    assert.ok(exportedHtml.body.includes(Buffer.from('Procedure steps')));
+    assert.ok(exportedHtml.body.includes(Buffer.from('Thaw aliquots on ice and record thaw duration.')));
+    assert.ok(exportedHtml.body.includes(Buffer.from('Attachments')));
+    assert.ok(exportedHtml.body.includes(Buffer.from('Bioanalyzer RIN result table.')));
+    assert.ok(exportedHtml.body.includes(Buffer.from('Three cycles are tolerated when thaw duration stays below five minutes.')));
+    assert.ok(exportedHtml.body.includes(Buffer.from('Outcome')));
+    assert.ok(exportedHtml.body.includes(Buffer.from('RIN remained above threshold after three cycles.')));
 
     const audit = await admin.req(base, 'GET', `/api/audit?project=${project.id}`);
     assert.ok(audit.some(a => a.action === 'SIGN_ENTRY'));
+    assert.ok(audit.some(a => a.action === 'CREATE_EXPERIMENT_TEMPLATE' && a.detail.includes(template.id)));
+    assert.ok(audit.some(a => a.action === 'CREATE_EXPERIMENT' && a.detail.includes(templatedExp.id)));
+    assert.ok(audit.some(a => a.action === 'ADD_EXPERIMENT_LINK' && a.detail.includes(relatedLink.id)));
+    assert.ok(audit.some(a => a.action === 'REMOVE_EXPERIMENT_LINK' && a.detail.includes(removableLink.id)));
+    assert.ok(audit.some(a => a.action === 'ADD_EXPERIMENT_STEP' && a.detail.includes(stepOne.id)));
+    assert.ok(audit.some(a => a.action === 'UPDATE_EXPERIMENT_STEP' && a.detail.includes(stepOne.id) && a.detail.includes('done')));
+    assert.ok(audit.some(a => a.action === 'REMOVE_EXPERIMENT_STEP' && a.detail.includes(stepTwo.id)));
+    assert.ok(audit.some(a => a.action === 'ADD_EXPERIMENT_ATTACHMENT' && a.detail.includes(attachment.id) && a.detail.includes('rin-results.csv')));
+    assert.ok(audit.some(a => a.action === 'REMOVE_EXPERIMENT_ATTACHMENT' && a.detail.includes(removableAttachment.id)));
+    assert.ok(audit.some(a => a.action === 'ADD_ENTRY_COMMENT' && a.detail.includes(comment.id)));
+    assert.ok(audit.some(a =>
+      a.action === 'UPLOAD_EVIDENCE' &&
+      a.detail.includes('figure-raw') &&
+      a.detail.includes('raw-slide-sketch.png') &&
+      a.detail.includes(exp.id)
+    ));
+    assert.ok(audit.some(a =>
+      a.action === 'UPLOAD_EVIDENCE' &&
+      a.detail.includes('ocr-clean') &&
+      a.detail.includes('processed-notebook-scan.png') &&
+      a.detail.includes(exp.id)
+    ));
     assert.ok(audit.some(a => a.action === 'ADD_FIGURE_ENTRY'));
+    assert.ok(audit.some(a => a.action === 'ADD_OCR_ENTRY' && a.detail.includes(ocrEntry.id)));
     assert.ok(audit.some(a => a.action === 'AI_POLISH_VOICE_DRAFT' && a.detail.includes('numbered_bullets')));
     assert.ok(audit.some(a => a.action === 'AI_POLISH_VOICE_DRAFT' && a.detail.includes('concise_paragraph')));
     assert.ok(audit.some(a => a.action === 'AI_POLISH_VOICE_DRAFT' && a.detail.includes('auto_lab_note')));
@@ -296,6 +636,10 @@ test('MVP pilot workflow: projects, access, signatures, exports, audit and sessi
 
     const search = await scientist.req(base, 'GET', '/api/search?q=formulation clarity');
     assert.ok(search.entries.some(e => e.id === entry.id));
+    const tagSearch = await scientist.req(base, 'GET', '/api/search?q=reviewer-ready');
+    assert.ok(tagSearch.experiments.some(e => e.id === exp.id));
+    const outcomeSearch = await scientist.req(base, 'GET', '/api/search?q=threshold');
+    assert.ok(outcomeSearch.experiments.some(e => e.id === exp.id));
 
     await scientist.req(base, 'POST', '/api/auth/sessions/revoke', {});
     await assert.rejects(() => scientist.req(base, 'GET', '/api/experiments'), /401/);
@@ -371,6 +715,19 @@ test('migration upgrades a pre-project database without crashing', async () => {
   assert.ok(auditCols.includes('project_id'));
   assert.ok(auditCols.includes('hash'));
   assert.ok(expCols.includes('project_id'));
+  assert.ok(upgraded.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='experiment_templates'").get());
+  assert.ok(expCols.includes('hypothesis'));
+  assert.ok(expCols.includes('protocol'));
+  assert.ok(expCols.includes('materials'));
+  assert.ok(expCols.includes('success_criteria'));
+  assert.ok(expCols.includes('safety_notes'));
+  assert.ok(expCols.includes('tags'));
+  assert.ok(expCols.includes('outcome_status'));
+  assert.ok(expCols.includes('outcome_summary'));
+  assert.ok(upgraded.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='entry_comments'").get());
+  assert.ok(upgraded.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='experiment_links'").get());
+  assert.ok(upgraded.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='experiment_attachments'").get());
+  assert.ok(upgraded.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='experiment_steps'").get());
   assert.ok(upgraded.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_audit_project'").get());
   upgraded.close();
 });
@@ -426,6 +783,19 @@ function jar() {
       const data = await res.json();
       if (!res.ok) throw new Error(`${res.status} ${data.error || res.statusText}`);
       return data;
+    },
+    async uploadAttachment(base, bytes, filename, mimeType, experimentId, note = '') {
+      const fd = new FormData();
+      fd.append('note', note);
+      fd.append('file', new Blob([bytes], { type: mimeType }), filename);
+      const res = await fetch(base + `/api/experiments/${experimentId}/attachments`, {
+        method: 'POST',
+        headers: cookie ? { cookie } : {},
+        body: fd
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(`${res.status} ${data.error || res.statusText}`);
+      return data;
     }
   };
 }
@@ -455,7 +825,31 @@ function mockOpenAI() {
     for await (const chunk of req) body += chunk;
     const payload = JSON.parse(body || '{}');
     const userText = payload.messages?.map(m => m.content).join('\n') || '';
-    const content = userText.includes('auto_lab_note')
+    const content = userText.includes('context-audit')
+      ? [
+          userText.includes('Hypothesis: Three cycles are tolerated when thaw duration stays below five minutes.') ? 'hypothesis yes' : 'hypothesis no',
+          userText.includes('Protocol / method: Run three controlled freeze-thaw cycles, record thaw duration, then measure RIN.') ? 'protocol yes' : 'protocol no',
+          userText.includes('Materials / reagents: LNP batch LN-042; PBS pH 7.4; RNase-free tubes; Bioanalyzer chip.') ? 'materials yes' : 'materials no',
+          userText.includes('Success criteria: RIN above 8.0 and no visible aggregation.') ? 'success yes' : 'success no',
+          userText.includes('Safety notes: Wear cryogenic gloves and keep RNaseZap available.') ? 'safety yes' : 'safety no',
+          userText.includes('Outcome: Success') && userText.includes('Outcome note: RIN remained above threshold after three cycles.') ? 'outcome yes' : 'outcome no'
+        ].join('\n')
+      : userText.includes('template: lab_report')
+      ? [
+          'Objective',
+          '- Record endpoint response for sample D4.',
+          '',
+          'Method',
+          '- Added 20 ul enzyme mix to sample D4.',
+          '- Incubated for 30 minutes at 37 C.',
+          '',
+          'Results / Observations',
+          '- Absorbance increased to 0.82.',
+          '',
+          'Deviations / Uncertainty',
+          '- Replicate two was uncertain.'
+        ].join('\n')
+      : userText.includes('auto_lab_note')
       ? [
           'Summary',
           '- Tube C7 was processed with uncertainty preserved.',

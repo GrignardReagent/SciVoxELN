@@ -2,6 +2,33 @@ import { api } from '../api.js';
 import { esc, fmtShort, toast, modal, closeModal, confirmModal, guard } from '../ui.js';
 import { isAdmin } from '../state.js';
 
+const ROLE_CAPABILITIES = [
+  {
+    role: 'viewer',
+    label: 'Viewer',
+    capability: 'Read notebook',
+    description: 'View project experiments, entries, exports, references, search results and project activity.'
+  },
+  {
+    role: 'scientist',
+    label: 'Scientist',
+    capability: 'Add and edit entries',
+    description: 'Create experiments, plans, voice/OCR/figure entries and AI drafts. Sign entries before lock.'
+  },
+  {
+    role: 'reviewer',
+    label: 'Reviewer',
+    capability: 'Lock experiments',
+    description: 'All scientist actions plus final review and experiment lock controls.'
+  },
+  {
+    role: 'owner',
+    label: 'Owner',
+    capability: 'Manage members',
+    description: 'All reviewer actions plus project membership management.'
+  }
+];
+
 export const renderProjects = guard(async (root, ctx) => {
   ctx.setHead('Projects', 'Workspaces, access and pilot teams');
   root.innerHTML = '<div class="muted">Loading…</div>';
@@ -44,7 +71,7 @@ async function showProject(root, projectId) {
           <tbody>${members.map(m => memberRow(m)).join('') || '<tr><td colspan="4" class="muted" style="padding:16px">No members.</td></tr>'}</tbody>
         </table>
       </div>
-      <div class="hint">Project roles: viewer can read, scientist can write/sign, reviewer can lock, owner can manage membership.</div>
+      ${roleCapabilityMatrix()}
     </div>`;
   const add = mount.querySelector('[data-add-member]');
   if (add) add.onclick = () => memberModal(projectId, () => showProject(root, projectId));
@@ -58,9 +85,30 @@ function memberRow(m) {
   return `<tr>
     <td><b>${esc(m.name || '—')}</b>${archived}</td>
     <td class="muted">${esc(m.email || '—')}</td>
-    <td><span class="pill">${esc(m.role)}</span></td>
+    <td><span class="pill">${esc(roleLabel(m.role))}</span><div class="muted role-note">${esc(roleDescription(m.role))}</div></td>
     <td>${isAdmin() ? `<button class="btn danger sm" data-remove-member="${m.id}">Remove</button>` : ''}</td>
   </tr>`;
+}
+
+function roleLabel(role) {
+  return ROLE_CAPABILITIES.find(r => r.role === role)?.label || role;
+}
+
+function roleDescription(role) {
+  return ROLE_CAPABILITIES.find(r => r.role === role)?.description || 'Custom project access role.';
+}
+
+function roleCapabilityMatrix() {
+  return `<div class="role-matrix" data-role-matrix>
+    <div class="role-matrix-row role-matrix-head">
+      <span>Role</span><span>Primary capability</span><span>What they can do</span>
+    </div>
+    ${ROLE_CAPABILITIES.map(r => `<div class="role-matrix-row">
+      <span class="role-matrix-role">${esc(r.label)}</span>
+      <span>${esc(r.capability)}</span>
+      <span class="muted">${esc(r.description)}</span>
+    </div>`).join('')}
+  </div>`;
 }
 
 async function newProjectModal(ctx) {
@@ -87,8 +135,9 @@ function memberModal(projectId, refresh) {
     <label class="fld">User email</label><input class="txt" id="mEmail" placeholder="scientist@company.com"/>
     <label class="fld">Project role</label>
     <select class="txt" id="mRole">
-      ${['viewer', 'scientist', 'reviewer', 'owner'].map(r => `<option>${r}</option>`).join('')}
+      ${['viewer', 'scientist', 'reviewer', 'owner'].map(r => `<option value="${esc(r)}" title="${esc(roleDescription(r))}">${esc(roleLabel(r))}</option>`).join('')}
     </select>
+    ${roleCapabilityMatrix()}
     <div class="row" style="margin-top:16px;justify-content:flex-end">
       <button class="btn ghost" data-x>Cancel</button><button class="btn" data-ok>Save</button></div>`);
   const m = document.getElementById('modal');

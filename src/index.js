@@ -22,6 +22,7 @@ import experiments from './routes/experiments.js';
 import entries from './routes/entries.js';
 import plans from './routes/plans.js';
 import inventory from './routes/inventory.js';
+import calendar from './routes/calendar.js';
 import audit from './routes/audit.js';
 import stt from './routes/stt.js';
 import uploads from './routes/uploads.js';
@@ -74,6 +75,7 @@ app.use(authenticate); // populates req.user from the session cookie (or null)
 // Public endpoints
 app.get('/api/health', (_req, res) => res.json({ ok: true, service: 'scivox-eln', time: new Date().toISOString() }));
 app.use('/api/auth', auth);
+app.use('/api/calendar', calendar);
 
 // Protected API (login required)
 app.use('/api/experiments', requireAuth, experiments);

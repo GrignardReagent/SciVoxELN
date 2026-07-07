@@ -11,15 +11,23 @@
  * testable against a mock server.
  */
 import { Router } from 'express';
-import { Experiments, Refs, Audit } from '../db.js';
+import { Experiments, Projects, Refs, Audit } from '../db.js';
 
 const r = Router();
 const CROSSREF = (process.env.CROSSREF_BASE || 'https://api.crossref.org').replace(/\/$/, '');
 const ZOTERO = (process.env.ZOTERO_BASE || 'https://api.zotero.org').replace(/\/$/, '');
 
-const expOr404 = (req, res) => {
+const expOr404 = (req, res, { minRole = 'viewer', requireUnlocked = false } = {}) => {
   const exp = Experiments.get(req.body?.experimentId || req.query.experimentId, req.user);
   if (!exp) { res.status(404).json({ error: 'Experiment not found' }); return null; }
+  if (!Projects.canAccessProject(req.user, exp.project_id, minRole)) {
+    res.status(minRole === 'viewer' ? 404 : 403).json({ error: minRole === 'viewer' ? 'Experiment not found' : 'Project write access required' });
+    return null;
+  }
+  if (requireUnlocked && exp.status === 'locked') {
+    res.status(409).json({ error: 'Experiment is locked (read-only)' });
+    return null;
+  }
   return exp;
 };
 
@@ -31,7 +39,7 @@ r.get('/', (req, res) => {
 
 /* ---- manual add ---- */
 r.post('/', (req, res) => {
-  const exp = expOr404(req, res); if (!exp) return;
+  const exp = expOr404(req, res, { minRole: 'scientist', requireUnlocked: true }); if (!exp) return;
   const { title } = req.body || {};
   if (!title || !title.trim()) return res.status(400).json({ error: 'Title is required' });
   const ref = Refs.create(exp.id, { ...req.body, source: 'manual', created_by: req.user.name });
@@ -41,7 +49,7 @@ r.post('/', (req, res) => {
 
 /* ---- add by DOI (CrossRef) ---- */
 r.post('/doi', async (req, res) => {
-  const exp = expOr404(req, res); if (!exp) return;
+  const exp = expOr404(req, res, { minRole: 'scientist', requireUnlocked: true }); if (!exp) return;
   const doi = (req.body?.doi || '').trim();
   if (!doi) return res.status(400).json({ error: 'DOI is required' });
   try {
@@ -55,7 +63,7 @@ r.post('/doi', async (req, res) => {
 
 /* ---- import BibTeX / RIS (paste from Zotero or Mendeley export) ---- */
 r.post('/import', (req, res) => {
-  const exp = expOr404(req, res); if (!exp) return;
+  const exp = expOr404(req, res, { minRole: 'scientist', requireUnlocked: true }); if (!exp) return;
   const text = req.body?.text || '';
   if (!text.trim()) return res.status(400).json({ error: 'Paste BibTeX or RIS content' });
   const fmt = /(^|\n)\s*@\w+\s*\{/.test(text) ? 'bibtex'
@@ -69,7 +77,7 @@ r.post('/import', (req, res) => {
 
 /* ---- import from a Zotero library ---- */
 r.post('/zotero', async (req, res) => {
-  const exp = expOr404(req, res); if (!exp) return;
+  const exp = expOr404(req, res, { minRole: 'scientist', requireUnlocked: true }); if (!exp) return;
   const userId = (req.body?.userId || process.env.ZOTERO_USER_ID || '').trim();
   const apiKey = (req.body?.apiKey || process.env.ZOTERO_API_KEY || '').trim();
   const collectionKey = (req.body?.collectionKey || '').trim();
@@ -88,6 +96,8 @@ r.delete('/:id', (req, res) => {
   if (!ref) return res.status(404).json({ error: 'Reference not found' });
   const exp = Experiments.get(ref.experiment_id, req.user);
   if (!exp) return res.status(404).json({ error: 'Reference not found' });
+  if (!Projects.canAccessProject(req.user, exp.project_id, 'scientist')) return res.status(403).json({ error: 'Project write access required' });
+  if (exp.status === 'locked') return res.status(409).json({ error: 'Experiment is locked (read-only)' });
   Refs.remove(req.params.id);
   Audit.log(req.user.name, req.user.role, 'DELETE_REFERENCE', `"${ref.title}"`, { projectId: exp.project_id });
   res.json({ ok: true });

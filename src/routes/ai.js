@@ -10,7 +10,7 @@
  * OPENAI_VISION_MODEL (optional; defaults to OPENAI_MODEL).
  */
 import { Router } from 'express';
-import { Entries, Experiments, Audit, Projects, isHiddenEntryType } from '../db.js';
+import { Entries, ExperimentAttachments, ExperimentLinks, ExperimentSteps, Experiments, Audit, Projects, isHiddenEntryType } from '../db.js';
 
 const r = Router();
 const MODEL = process.env.OPENAI_MODEL || 'gpt-5.5';
@@ -18,7 +18,7 @@ const VISION_MODEL = process.env.OPENAI_VISION_MODEL || MODEL;
 const BASE = (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '');
 const API_URL = `${BASE}/chat/completions`;
 const configured = () => !!process.env.OPENAI_API_KEY;
-const VOICE_TEMPLATES = new Set(['auto_lab_note', 'numbered_observations', 'concise_paragraph']);
+const VOICE_TEMPLATES = new Set(['lab_report', 'auto_lab_note', 'numbered_observations', 'concise_paragraph']);
 const LEGACY_STYLE_TO_TEMPLATE = {
   numbered_bullets: 'numbered_observations',
   concise_paragraph: 'concise_paragraph'
@@ -27,8 +27,6 @@ const LEGACY_STYLE_TO_TEMPLATE = {
 r.get('/health', (_req, res) => res.json({ configured: configured(), model: MODEL, visionModel: VISION_MODEL }));
 
 r.post('/process-voice-draft', async (req, res) => {
-  if (!configured()) return res.status(501).json({ error: 'AI assistant is not configured (set OPENAI_API_KEY).' });
-
   const experimentId = String(req.body?.experimentId || '');
   const transcript = compactSpaces(req.body?.transcript || '').slice(0, 16000);
   const rawNotes = compactSpaces(req.body?.rawNotes ?? req.body?.manualNotes ?? '').slice(0, 6000);
@@ -39,7 +37,7 @@ r.post('/process-voice-draft', async (req, res) => {
       : '';
   const requestedTemplate = String(req.body?.template || '').trim();
   if (requestedTemplate && !VOICE_TEMPLATES.has(requestedTemplate)) {
-    return res.status(400).json({ error: 'template must be auto_lab_note, numbered_observations, or concise_paragraph' });
+    return res.status(400).json({ error: 'template must be lab_report, auto_lab_note, numbered_observations, or concise_paragraph' });
   }
   const template = VOICE_TEMPLATES.has(requestedTemplate)
     ? requestedTemplate
@@ -54,6 +52,14 @@ r.post('/process-voice-draft', async (req, res) => {
   if (!exp) return res.status(404).json({ error: 'Experiment not found' });
   if (!Projects.canAccessProject(req.user, exp.project_id, 'scientist')) return res.status(403).json({ error: 'Project write access required' });
   if (exp.status === 'locked') return res.status(409).json({ error: 'Experiment is locked (read-only)' });
+
+  if (!configured()) {
+    const output = localVoiceDraft(transcript, rawNotes, template, exp);
+    Audit.log(req.user.name, req.user.role, 'LOCAL_VOICE_DRAFT',
+      `${responseStyle} for "${exp.title}" | template ${template} | transcript words ${countWords(transcript)} | raw note words ${countWords(rawNotes)} | model local-template`,
+      { projectId: exp.project_id });
+    return res.json({ style: responseStyle, template, output, model: 'local-template', experimentId: exp.id, offline: true });
+  }
 
   const system = {
     role: 'system',
@@ -114,11 +120,28 @@ r.post('/chat', async (req, res) => {
   if (exp) {
     const entries = (exp.entries || []).filter(e => !isHiddenEntryType(e.type)).slice(-12)
       .map(e => `- [${e.type}${e.signed_by ? ', signed' : ''}] ${e.text}`).join('\n').slice(0, 4000);
+    const links = ExperimentLinks.list(exp.id, req.user).slice(0, 12)
+      .map(link => `- ${link.linked_title}${link.note ? `: ${link.note}` : ''}`).join('\n').slice(0, 1800);
+    const steps = ExperimentSteps.list(exp.id).slice(0, 20)
+      .map(step => `- ${step.done ? '[done]' : '[open]'} ${step.text}`).join('\n').slice(0, 1800);
+    const attachments = ExperimentAttachments.list(exp.id).slice(0, 12)
+      .map(att => `- ${att.original_name}${att.note ? `: ${att.note}` : ''}`).join('\n').slice(0, 1800);
     context = [
       `Title: ${exp.title}`,
       `Project: ${exp.project || '—'}`,
       `Status: ${exp.status}`,
+      `Tags: ${exp.tags || '—'}`,
       `Objective: ${exp.objective || '—'}`,
+      `Hypothesis: ${exp.hypothesis || '—'}`,
+      `Protocol / method: ${exp.protocol || '—'}`,
+      `Materials / reagents: ${exp.materials || '—'}`,
+      `Success criteria: ${exp.success_criteria || '—'}`,
+      `Safety notes: ${exp.safety_notes || '—'}`,
+      `Outcome: ${outcomeStatusLabel(exp.outcome_status)}`,
+      `Outcome note: ${exp.outcome_summary || '—'}`,
+      `Related experiments:\n${links || '(none)'}`,
+      `Procedure steps:\n${steps || '(none)'}`,
+      `Attachments:\n${attachments || '(none)'}`,
       `Recent notebook entries:\n${entries || '(none yet)'}`
     ].join('\n');
   }
@@ -326,7 +349,25 @@ function compactSpaces(text) {
   return String(text || '').replace(/[ \t]+/g, ' ').replace(/\s*\n+\s*/g, '\n').trim();
 }
 
+function outcomeStatusLabel(status) {
+  return {
+    running: 'Running',
+    needs_redo: 'Needs redo',
+    success: 'Success',
+    fail: 'Fail',
+    inconclusive: 'Inconclusive'
+  }[String(status || 'running')] || 'Running';
+}
+
 function voiceTemplateInstruction(template) {
+  if (template === 'lab_report') {
+    return [
+      'Return a structured lab report draft using only relevant section headings from this exact set:',
+      'Objective, Method, Results / Observations, Deviations / Uncertainty, Next Actions.',
+      'Under each included heading, write 1 to 3 short "-" bullet lines.',
+      'Omit any heading where the source has no supporting detail. Do not write a conclusion unless the source explicitly supports it.'
+    ].join(' ');
+  }
   if (template === 'concise_paragraph') {
     return 'Return 1 to 2 concise paragraphs suitable as the visible notebook entry. Do not use bullets or headings.';
   }
@@ -350,10 +391,140 @@ function normalizeVoiceDraftOutput(raw, template) {
       .filter(Boolean)
       .join(' '), 180);
   }
+  if (template === 'lab_report') {
+    return applyLabReportTemplate(cleaned);
+  }
   if (template === 'auto_lab_note') {
     return applyAutoLabNoteTemplate(cleaned);
   }
   return applyNumberedVoiceTemplate(cleaned);
+}
+
+function localVoiceDraft(transcript, rawNotes, template, exp = {}) {
+  const sourceSentences = extractVoiceDraftSentences(transcript, rawNotes);
+  if (template === 'lab_report') return localLabReportDraft(sourceSentences, exp);
+  if (template === 'concise_paragraph') {
+    const paragraph = takeWords(sourceSentences.join(' '), 180);
+    return paragraph || 'No source-backed voice note was generated.';
+  }
+  if (template === 'numbered_observations') {
+    return applyNumberedVoiceTemplate(sourceSentences.join('\n'));
+  }
+  return applyAutoLabNoteTemplate(sourceSentences.join('\n'));
+}
+
+function localLabReportDraft(sentences, exp = {}) {
+  const allowed = ['Objective', 'Method', 'Results / Observations', 'Deviations / Uncertainty', 'Next Actions'];
+  const sectionMap = new Map(allowed.map(name => [name, []]));
+  if (exp.objective) addLocalPoint(sectionMap, 'Objective', exp.objective, 1);
+
+  for (const sentence of sentences) {
+    const text = String(sentence || '').trim();
+    if (!text) continue;
+    const lower = text.toLowerCase();
+    const hasUncertainty = /\b(unclear|uncertain|unsure|unknown|not clear|deviation|deviated|failed|error|issue|questionable)\b/.test(lower);
+    const isNext = /\b(next|repeat|follow up|follow-up|check|verify|confirm|store|send|prepare)\b/.test(lower);
+    const isMethod = /\b(add(?:ed)?|aliquot(?:ed)?|incubat\w*|mix(?:ed)?|vortex\w*|centrifug\w*|run|ran|measur\w*|transfer(?:red)?|wash(?:ed)?|pipett\w*|dilut\w*)\b/.test(lower);
+    const isResult = /\b(observed|visible|cloudy|clear|colour|color|precipitate|contamination|absorbance|yield|increased|decreased|result|signal|reading)\b/.test(lower);
+
+    if (isMethod) addLocalPoint(sectionMap, 'Method', text);
+    if (isResult) addLocalPoint(sectionMap, 'Results / Observations', text);
+    if (hasUncertainty) addLocalPoint(sectionMap, 'Deviations / Uncertainty', text);
+    if (isNext) addLocalPoint(sectionMap, 'Next Actions', text);
+    if (!isMethod && !isResult && !hasUncertainty && !isNext) addLocalPoint(sectionMap, 'Objective', text);
+  }
+
+  const chunks = [];
+  for (const name of allowed) {
+    const points = sectionMap.get(name) || [];
+    if (!points.length) continue;
+    chunks.push(`${name}\n${points.map(point => `- ${point}`).join('\n')}`);
+  }
+  if (!chunks.length) return 'Objective\n- No source-backed lab report draft was generated.';
+  return chunks.join('\n\n');
+}
+
+function addLocalPoint(sectionMap, section, point, limit = 3) {
+  const points = sectionMap.get(section);
+  if (!points || points.length >= limit) return;
+  const formatted = formatBulletSentence(point, 34);
+  if (!points.includes(formatted)) points.push(formatted);
+}
+
+function extractVoiceDraftSentences(...parts) {
+  const out = [];
+  for (const part of parts) {
+    for (const line of String(part || '').split(/\n+/)) {
+      const cleaned = line
+        .replace(/^(?:manual notes|source transcript|raw lab notes)\s*:\s*/i, '')
+        .replace(/^\d+[\).:-]\s*/, '')
+        .replace(/^-+\s*/, '')
+        .trim();
+      if (!cleaned || cleaned === '(none)') continue;
+      for (const sentence of splitSentences(cleaned)) {
+        const point = sentence.trim();
+        if (point) out.push(point);
+      }
+    }
+  }
+  return out;
+}
+
+function applyLabReportTemplate(raw) {
+  const allowed = ['Objective', 'Method', 'Results / Observations', 'Deviations / Uncertainty', 'Next Actions'];
+  const sectionMap = new Map(allowed.map(name => [name, []]));
+  let current = null;
+
+  for (const originalLine of String(raw || '').split(/\n+/)) {
+    const line = originalLine.trim();
+    if (!line) continue;
+    const normalizedHeading = normalizeLabReportHeading(line);
+    if (sectionMap.has(normalizedHeading)) {
+      current = normalizedHeading;
+      continue;
+    }
+    const point = line
+      .replace(/^\d+[\).:-]\s*/, '')
+      .replace(/^-+\s*/, '')
+      .trim();
+    if (!point || /^[A-Z][A-Za-z/ &-]{0,48}:$/.test(point)) continue;
+    if (!current) current = inferLabReportSection(point);
+    if (sectionMap.has(current) && sectionMap.get(current).length < 3) {
+      sectionMap.get(current).push(formatBulletSentence(point, 34));
+    }
+  }
+
+  const chunks = [];
+  for (const name of allowed) {
+    const points = sectionMap.get(name) || [];
+    if (!points.length) continue;
+    chunks.push(`${name}\n${points.map(point => `- ${point}`).join('\n')}`);
+  }
+  if (!chunks.length) return 'Objective\n- No source-backed lab report draft was generated.';
+  return chunks.join('\n\n');
+}
+
+function normalizeLabReportHeading(line) {
+  const cleaned = String(line || '').replace(/:$/, '').trim().toLowerCase();
+  if (cleaned === 'objective' || cleaned === 'purpose' || cleaned === 'aim') return 'Objective';
+  if (cleaned === 'method' || cleaned === 'methods' || cleaned === 'procedure' || cleaned === 'protocol') return 'Method';
+  if (cleaned === 'results / observations' || cleaned === 'results and observations' || cleaned === 'results' || cleaned === 'observations') {
+    return 'Results / Observations';
+  }
+  if (cleaned === 'deviations / uncertainty' || cleaned === 'deviations and uncertainty' || cleaned === 'uncertainty' || cleaned === 'deviations') {
+    return 'Deviations / Uncertainty';
+  }
+  if (cleaned === 'next action' || cleaned === 'next actions' || cleaned === 'actions') return 'Next Actions';
+  return line;
+}
+
+function inferLabReportSection(point) {
+  const text = String(point || '').toLowerCase();
+  if (/\b(unclear|uncertain|unsure|unknown|not clear|deviation|deviated|failed|error|issue)\b/.test(text)) return 'Deviations / Uncertainty';
+  if (/\b(next|repeat|follow up|follow-up|check|verify|confirm|store|send|prepare)\b/.test(text)) return 'Next Actions';
+  if (/\b(add|added|aliquot|aliquoted|incubat|mix|mixed|vortex|centrifug|run|ran|measure|measured|transfer|transferred)\b/.test(text)) return 'Method';
+  if (/\b(observed|visible|cloudy|clear|colour|color|precipitate|contamination|absorbance|yield|increased|decreased|result)\b/.test(text)) return 'Results / Observations';
+  return 'Objective';
 }
 
 function applyAutoLabNoteTemplate(raw) {

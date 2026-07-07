@@ -30,3 +30,19 @@ test('project member rows preserve archived members with an archived badge', () 
   assert.match(projectsSource, /Archived/);
   assert.match(projectsSource, /pill danger/);
 });
+
+test('project role management explains what each project role can do', () => {
+  assert.match(projectsSource, /roleCapabilityMatrix/);
+  assert.match(projectsSource, /data-role-matrix/);
+  assert.match(projectsSource, /Viewer/);
+  assert.match(projectsSource, /Scientist/);
+  assert.match(projectsSource, /Reviewer/);
+  assert.match(projectsSource, /Owner/);
+  assert.match(projectsSource, /Read notebook/);
+  assert.match(projectsSource, /Add and edit entries/);
+  assert.match(projectsSource, /Sign entries/);
+  assert.match(projectsSource, /Lock experiments/);
+  assert.match(projectsSource, /Manage members/);
+  assert.match(projectsSource, /roleDescription\(m\.role\)/);
+  assert.match(projectsSource, /roleDescription\(r\)/);
+});

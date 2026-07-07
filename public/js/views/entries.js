@@ -1,5 +1,5 @@
 import { api } from '../api.js';
-import { esc, fmt, fmtShort, toast, modal, closeModal, confirmModal, guard } from '../ui.js';
+import { esc, fmt, toast, modal, closeModal, confirmModal, guard } from '../ui.js';
 import { isAdmin } from '../state.js';
 
 const selected = new Set();
@@ -103,6 +103,7 @@ function repaintList(root, entries, search, ctx) {
   });
   list.querySelectorAll('[data-open-exp]').forEach(btn => btn.onclick = () => window.__scivox?.go('experiments', { id: btn.dataset.openExp }));
   wireEntryEditing(root, ctx);
+  wireSourceLinks(root);
   repaintSelection(root);
 }
 
@@ -142,12 +143,16 @@ function entryRow(en) {
   return `<div class="entry-lib-row ${en.signed_by ? 'signed' : ''}" data-entry-id="${esc(en.id)}">
     <input type="checkbox" data-entry-check value="${esc(en.id)}" aria-label="Select entry"/>
     <div class="entry-lib-main">
-      <div class="eh">
+      <div class="entry-lib-head">
         ${badge(en)}
-        <span>${fmt(en.created_at)}</span>
-        <span>${esc(en.experiment_title || 'Untitled experiment')}</span>
-        <span>${esc(en.project_name || 'General')}</span>
         ${en.signed_by ? `<span class="badge b-sig">Signed</span>` : ''}
+      </div>
+      <div class="entry-lib-meta-grid" data-entry-meta>
+        ${entryMetaHTML('Experiment', en.experiment_title || 'Untitled experiment')}
+        ${entryMetaHTML('Project', en.project_name || 'General')}
+        ${entryMetaHTML('Created', fmt(en.created_at))}
+        ${entryMetaHTML('Author', en.author || 'Unknown')}
+        ${entryMetaHTML('Fingerprint', (en.hash || '').slice(0, 12), true)}
       </div>
       <div class="body ${canEdit ? 'editable-entry' : ''}" ${canEdit ? `data-lib-edit-entry="${esc(en.id)}" title="Click to edit"` : ''}>${esc(en.text)}</div>
       ${canEdit ? `<div class="entry-editor" data-lib-entry-editor="${esc(en.id)}" style="display:none">
@@ -158,13 +163,15 @@ function entryRow(en) {
         </div>
       </div>` : ''}
       ${sourceTags(en)}
-      <div class="meta">
-        <span>${esc(en.author || 'Unknown')}</span>
-        <span>${fmtShort(en.created_at)}</span>
-        <span class="mono">${esc(en.hash || '').slice(0, 12)}</span>
-      </div>
     </div>
     <button class="btn ghost sm" data-open-exp="${esc(en.experiment_id)}">Open</button>
+  </div>`;
+}
+
+function entryMetaHTML(label, value, mono = false) {
+  return `<div class="entry-lib-meta-item">
+    <span class="entry-lib-meta-label">${esc(label)}</span>
+    <span class="entry-lib-meta-value ${mono ? 'mono' : ''}">${esc(value || '—')}</span>
   </div>`;
 }
 
@@ -269,8 +276,34 @@ function sourceTags(en) {
   const ids = parseSourceEntryIds(en.source_entry_ids);
   if (!ids.length) return '';
   return `<div class="source-tags"><span class="muted">Based on</span>
-    ${ids.map((id, i) => `<span class="source-tag">note ${i + 1}</span>`).join('')}
+    ${ids.map((id, i) => `<button class="source-tag" data-source-entry="${esc(id)}" type="button">note ${i + 1}</button>`).join('')}
   </div>`;
+}
+
+function wireSourceLinks(root) {
+  root.querySelectorAll('[data-source-entry]').forEach(btn => btn.onclick = guard(async () => {
+    const target = visibleRows(root).find(row => row.dataset.entryId === btn.dataset.sourceEntry);
+    if (!target) return openSourceEntryModal(btn);
+    target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    target.classList.add('entry-focus');
+    setTimeout(() => target.classList.remove('entry-focus'), 1400);
+  }));
+}
+
+async function openSourceEntryModal(btn) {
+  const en = await api.entry(btn.dataset.sourceEntry);
+  const isTranscript = en.type === 'voice_transcript';
+  const isRawOcr = en.type === 'ocr_raw_text';
+  modal(`<div class="between">
+      <h3>${isTranscript ? 'Source transcript' : isRawOcr ? 'Raw OCR output' : 'Source entry'}</h3>
+      <span class="pill">${esc(en.type || 'entry')}</span>
+    </div>
+    <textarea class="txt" readonly style="min-height:260px">${esc(en.text || '')}</textarea>
+    <div class="hashline">fingerprint ${esc(en.hash || '')}</div>
+    <div class="row" style="margin-top:16px;justify-content:flex-end">
+      <button class="btn ghost" data-x>Close</button>
+    </div>`);
+  document.getElementById('modal').querySelector('[data-x]').onclick = closeModal;
 }
 
 function parseSourceEntryIds(value) {
