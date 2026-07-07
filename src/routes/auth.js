@@ -69,6 +69,10 @@ r.post('/login', (req, res) => {
     Audit.log('Unknown', '', 'LOGIN_FAILED', `${email || '(blank)'} | no account`);
     return res.status(401).json({ error: 'No account found with that email' });
   }
+  if (u.archived_at) {
+    Audit.log(u.name || u.email, u.role, 'LOGIN_FAILED', `${email} | archived account`);
+    return res.status(403).json({ error: 'This account has been archived. Contact an administrator to restore access.' });
+  }
   if (u.provider !== 'local' || !u.password_hash) {
     Audit.log(u.name || u.email, u.role, 'LOGIN_FAILED', `${email} | provider ${u.provider}`);
     return res.status(401).json({ error: `This account uses ${u.provider} sign-in — use the ${u.provider} button above` });
@@ -96,6 +100,11 @@ r.post('/password-reset', (req, res) => {
     if (password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' });
     const row = PasswordResets.consume(token);
     if (!row) return res.status(400).json({ error: 'Password reset token is invalid or expired' });
+    const existing = Users.getById(row.user_id);
+    if (existing?.archived_at) {
+      Audit.log(existing.name || existing.email, existing.role, 'PASSWORD_RESET_BLOCKED', `${existing.email || existing.id} | archived account`);
+      return res.status(403).json({ error: 'This account has been archived. Contact an administrator to restore access.' });
+    }
     const u = Users.setPassword(row.user_id, hashPassword(password));
     revokeUserSessions(u.id);
     Audit.log(u.name || u.email, u.role, 'PASSWORD_RESET_COMPLETE', u.email || u.id);
@@ -105,9 +114,11 @@ r.post('/password-reset', (req, res) => {
   const email = (req.body?.email || '').trim().toLowerCase();
   const u = Users.getByEmail(email);
   let issued = null;
-  if (u && u.provider === 'local') {
+  if (u && !u.archived_at && u.provider === 'local') {
     issued = PasswordResets.issue(u.id);
     Audit.log(u.name || u.email, u.role, 'PASSWORD_RESET_REQUEST', email);
+  } else if (u?.archived_at) {
+    Audit.log(u.name || u.email, u.role, 'PASSWORD_RESET_REQUEST', `${email} | archived account`);
   } else {
     Audit.log('Unknown', '', 'PASSWORD_RESET_REQUEST', `${email || '(blank)'} | no local account`);
   }
@@ -161,6 +172,11 @@ r.get('/oauth/:provider/callback', async (req, res) => {
     const prof = await p.profile(code, req);      // { providerId, email, name }
     let u = Users.getByProvider(req.params.provider, prof.providerId);
     if (!u && prof.email) u = Users.getByEmail(prof.email); // link existing account by verified email
+    if (u?.archived_at) {
+      Audit.log(u.name || u.email, u.role, 'LOGIN_FAILED', `${req.params.provider} | archived account`);
+      clearOAuthState(res);
+      return res.status(403).send('This account has been archived. Contact an administrator to restore access.');
+    }
     if (!u) {
       const role = decideRole(prof.email);
       u = Users.create({ email: prof.email, name: prof.name, role, provider: req.params.provider, providerId: prof.providerId });

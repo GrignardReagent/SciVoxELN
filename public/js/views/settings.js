@@ -34,7 +34,7 @@ export const renderSettings = guard(async (root, ctx) => {
 
           <h2 class="sec-t" style="margin-top:20px">Voice transcription</h2>
           <p class="muted" style="font-size:13px;margin-top:0">Live dictation uses browser Web Speech when available. Server fallback: <b>${esc(stt.provider)}</b>${stt.serverStt ? ' ready' : ' off'}.</p>
-          <div class="hint" style="margin-top:0">Voice capture keeps the raw transcript as source evidence. When AI is configured, Stop creates an editable polished draft before Save; otherwise the raw transcript can be saved directly.</div>
+          <div class="hint" style="margin-top:0">Voice capture keeps raw lab notes in the editor and stores the live transcript quietly as source evidence. When AI is configured, Stop opens an editable enhanced-entry preview before Save; otherwise raw notes plus transcript can be saved directly.</div>
         </div>
 
         <div class="card">

@@ -41,6 +41,7 @@ r.patch('/:id/members', (req, res) => {
     Projects.removeMember(project.id, user.id);
     Audit.log(req.user.name, req.user.role, 'REMOVE_PROJECT_MEMBER', `${user.email || user.id} from "${project.name}"`, { projectId: project.id });
   } else {
+    if (user.archived_at) return res.status(409).json({ error: 'Archived users must be restored before project membership can be changed' });
     try { Projects.setMember(project.id, user.id, role); }
     catch { return res.status(400).json({ error: 'Role must be viewer, scientist, reviewer or owner' }); }
     Audit.log(req.user.name, req.user.role, 'SET_PROJECT_MEMBER', `${user.email || user.id} -> ${role} in "${project.name}"`, { projectId: project.id });

@@ -54,8 +54,9 @@ async function showProject(root, projectId) {
 }
 
 function memberRow(m) {
+  const archived = m.archived_at ? ' <span class="pill danger">Archived</span>' : '';
   return `<tr>
-    <td><b>${esc(m.name || '—')}</b></td>
+    <td><b>${esc(m.name || '—')}</b>${archived}</td>
     <td class="muted">${esc(m.email || '—')}</td>
     <td><span class="pill">${esc(m.role)}</span></td>
     <td>${isAdmin() ? `<button class="btn danger sm" data-remove-member="${m.id}">Remove</button>` : ''}</td>

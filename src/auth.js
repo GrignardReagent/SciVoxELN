@@ -134,7 +134,7 @@ export function authenticate(req, _res, next) {
   const uid = readToken(parseCookies(req)[COOKIE]);
   if (uid) {
     const u = Users.getById(uid);
-    if (u) req.user = { id: u.id, name: u.name || u.email || 'User', email: u.email, role: u.role };
+    if (u && !u.archived_at) req.user = { id: u.id, name: u.name || u.email || 'User', email: u.email, role: u.role };
   }
   next();
 }

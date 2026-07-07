@@ -84,6 +84,8 @@ export function migrate() {
       provider          TEXT NOT NULL DEFAULT 'local',
       provider_id       TEXT,
       email_verified_at TEXT,
+      archived_at       TEXT,
+      archived_by       TEXT,
       created_at        TEXT NOT NULL,
       updated_at        TEXT NOT NULL
     );
@@ -252,6 +254,8 @@ export function migrate() {
   `);
 
   addColumn('users', 'email_verified_at', 'TEXT');
+  addColumn('users', 'archived_at', 'TEXT');
+  addColumn('users', 'archived_by', 'TEXT');
   addColumn('experiments', 'project_id', 'TEXT');
   addColumn('entries', 'signature_meaning', 'TEXT');
   addColumn('entries', 'deleted_at', 'TEXT');
@@ -318,12 +322,16 @@ function backfillLegacyHashes() {
 /* ------------------------------------------------------------------ */
 const publicUser = u => u && ({
   id: u.id, email: u.email, name: u.name, role: u.role, provider: u.provider,
-  email_verified_at: u.email_verified_at, created_at: u.created_at
+  email_verified_at: u.email_verified_at, archived_at: u.archived_at || null,
+  archived_by: u.archived_by || null, created_at: u.created_at
 });
 
 export const Users = {
   count() { return db.prepare('SELECT COUNT(*) n FROM users').get().n; },
-  list() { return db.prepare('SELECT * FROM users ORDER BY created_at ASC').all().map(publicUser); },
+  list({ includeArchived = false } = {}) {
+    const where = includeArchived ? '' : 'WHERE archived_at IS NULL';
+    return db.prepare(`SELECT * FROM users ${where} ORDER BY created_at ASC`).all().map(publicUser);
+  },
   getById(uid) { return db.prepare('SELECT * FROM users WHERE id = ?').get(uid); },
   getByEmail(email) { return email ? db.prepare('SELECT * FROM users WHERE email = ? COLLATE NOCASE').get(email) : null; },
   getByProvider(provider, providerId) {
@@ -341,6 +349,16 @@ export const Users = {
     db.prepare('UPDATE users SET role=?, updated_at=? WHERE id=?').run(role, now(), uid);
     return publicUser(this.getById(uid));
   },
+  archive(uid, archivedBy) {
+    db.prepare('UPDATE users SET archived_at=?, archived_by=?, updated_at=? WHERE id=? AND archived_at IS NULL')
+      .run(now(), archivedBy || null, now(), uid);
+    return publicUser(this.getById(uid));
+  },
+  restore(uid) {
+    db.prepare('UPDATE users SET archived_at=NULL, archived_by=NULL, updated_at=? WHERE id=?')
+      .run(now(), uid);
+    return publicUser(this.getById(uid));
+  },
   setPassword(uid, passwordHash) {
     db.prepare("UPDATE users SET password_hash=?, provider='local', updated_at=? WHERE id=?").run(passwordHash, now(), uid);
     return this.getById(uid);
@@ -349,7 +367,7 @@ export const Users = {
     db.prepare('UPDATE users SET email_verified_at=?, updated_at=? WHERE id=?').run(now(), now(), uid);
     return this.getById(uid);
   },
-  countAdmins() { return db.prepare("SELECT COUNT(*) n FROM users WHERE role='admin'").get().n; },
+  countAdmins() { return db.prepare("SELECT COUNT(*) n FROM users WHERE role='admin' AND archived_at IS NULL").get().n; },
   public: publicUser
 };
 
@@ -451,7 +469,7 @@ export const Projects = {
     return this.get(_id);
   },
   members(projectId) {
-    return db.prepare(`SELECT m.project_id,m.role,m.created_at,m.updated_at,u.id,u.email,u.name,u.provider,u.created_at AS user_created_at
+    return db.prepare(`SELECT m.project_id,m.role,m.created_at,m.updated_at,u.id,u.email,u.name,u.provider,u.archived_at,u.archived_by,u.created_at AS user_created_at
       FROM memberships m JOIN users u ON u.id=m.user_id WHERE m.project_id=?
       ORDER BY u.name COLLATE NOCASE, u.email COLLATE NOCASE`).all(projectId);
   },

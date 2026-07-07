@@ -279,14 +279,21 @@ The composer prefers the browser Web Speech API when available, because it
 shows interim text while you speak. Server STT is the fallback for browsers or
 phones that cannot provide live dictation.
 
-Voice entries now keep capture and notebook text separate. The live/raw
-transcript is collected in a source transcript panel while you can type brief
-manual notes. When `OPENAI_API_KEY` is configured, stopping dictation calls
-`POST /api/ai/process-voice-draft` to generate an editable numbered-bullet or
-concise-paragraph draft. Saving the polished draft writes a visible `voice`
-entry and a linked hidden `voice_transcript` source entry for audit/export
-provenance. If AI is not configured, you can still save the raw transcript as a
-normal voice entry.
+Voice entries keep capture evidence and notebook text separate. During capture,
+the main editor is for raw lab notes while live dictation is stored quietly in
+the background and can be inspected from the Source transcript control. When
+`OPENAI_API_KEY` is configured, stopping dictation calls
+`POST /api/ai/process-voice-draft` with `{ experimentId, transcript, rawNotes,
+template }` and opens an editable enhanced-entry review state. The default
+template is Auto lab note; review-time regeneration can switch to Numbered
+observations or Concise paragraph. Saving the enhanced draft writes a visible
+`voice` entry and a linked hidden `voice_transcript` source entry for
+audit/export provenance. If AI is not configured, you can still save the raw
+notes plus transcript as a normal voice entry.
+
+SciVox deliberately keeps this browser ELN flow explicit and lab-focused: it
+does not join meetings, inspect calendars, or capture system audio like desktop
+meeting note apps. Raw audio is not stored by the ELN.
 
 `STT_PROVIDER` selects that server fallback:
 

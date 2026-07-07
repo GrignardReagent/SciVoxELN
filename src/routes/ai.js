@@ -18,6 +18,11 @@ const VISION_MODEL = process.env.OPENAI_VISION_MODEL || MODEL;
 const BASE = (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '');
 const API_URL = `${BASE}/chat/completions`;
 const configured = () => !!process.env.OPENAI_API_KEY;
+const VOICE_TEMPLATES = new Set(['auto_lab_note', 'numbered_observations', 'concise_paragraph']);
+const LEGACY_STYLE_TO_TEMPLATE = {
+  numbered_bullets: 'numbered_observations',
+  concise_paragraph: 'concise_paragraph'
+};
 
 r.get('/health', (_req, res) => res.json({ configured: configured(), model: MODEL, visionModel: VISION_MODEL }));
 
@@ -26,10 +31,24 @@ r.post('/process-voice-draft', async (req, res) => {
 
   const experimentId = String(req.body?.experimentId || '');
   const transcript = compactSpaces(req.body?.transcript || '').slice(0, 16000);
-  const manualNotes = compactSpaces(req.body?.manualNotes || '').slice(0, 6000);
-  const style = req.body?.style === 'concise_paragraph' ? 'concise_paragraph' : 'numbered_bullets';
+  const rawNotes = compactSpaces(req.body?.rawNotes ?? req.body?.manualNotes ?? '').slice(0, 6000);
+  const legacyStyle = req.body?.style === 'concise_paragraph'
+    ? 'concise_paragraph'
+    : req.body?.style === 'numbered_bullets'
+      ? 'numbered_bullets'
+      : '';
+  const requestedTemplate = String(req.body?.template || '').trim();
+  if (requestedTemplate && !VOICE_TEMPLATES.has(requestedTemplate)) {
+    return res.status(400).json({ error: 'template must be auto_lab_note, numbered_observations, or concise_paragraph' });
+  }
+  const template = VOICE_TEMPLATES.has(requestedTemplate)
+    ? requestedTemplate
+    : legacyStyle
+      ? LEGACY_STYLE_TO_TEMPLATE[legacyStyle]
+      : 'auto_lab_note';
+  const responseStyle = legacyStyle || template;
   if (!experimentId) return res.status(400).json({ error: 'experimentId required' });
-  if (!transcript && !manualNotes) return res.status(400).json({ error: 'transcript or manualNotes required' });
+  if (!transcript && !rawNotes) return res.status(400).json({ error: 'transcript or rawNotes required' });
 
   const exp = Experiments.get(experimentId, req.user);
   if (!exp) return res.status(404).json({ error: 'Experiment not found' });
@@ -40,23 +59,21 @@ r.post('/process-voice-draft', async (req, res) => {
     role: 'system',
     content:
       'You are SciVox Assistant, polishing a dictated laboratory notebook draft for a regulated Electronic Lab Notebook. ' +
-      'Use only the supplied transcript and manual notes. Do not invent reagent names, measurements, sample IDs, results, conclusions, or rationale. ' +
+      'Use only the supplied transcript and raw lab notes. Do not invent reagent names, measurements, sample IDs, results, conclusions, or rationale. ' +
       'Preserve exact units, concentrations, temperatures, times, pH values, lot numbers, and sample identifiers. ' +
-      'If a detail is unclear, write that it was unclear instead of guessing. Return plain text only.'
+      'Preserve uncertainty, negations, and "not observed" statements exactly. If a detail is unclear, write that it was unclear instead of guessing. Return plain text only.'
   };
   const user = {
     role: 'user',
     content: [
-      `style: ${style}`,
-      style === 'numbered_bullets'
-        ? 'Return 3 to 7 numbered points, each as "1. ...", concise and suitable as the visible notebook entry.'
-        : 'Return 1 to 2 concise paragraphs suitable as the visible notebook entry.',
-      'Manual notes should guide what matters most, but transcript facts remain the source evidence.',
+      `template: ${template}`,
+      voiceTemplateInstruction(template),
+      'Raw lab notes should guide what matters most, but transcript facts remain the source evidence.',
       '',
       `Experiment: ${exp.title}`,
       `Objective: ${exp.objective || 'not set'}`,
       '',
-      `Manual notes:\n${manualNotes || '(none)'}`,
+      `Raw lab notes:\n${rawNotes || '(none)'}`,
       '',
       `Source transcript:\n${transcript || '(none)'}`
     ].join('\n')
@@ -74,11 +91,11 @@ r.post('/process-voice-draft', async (req, res) => {
       return res.status(502).json({ error: msg });
     }
     const rawOutput = data?.choices?.[0]?.message?.content?.trim() || '';
-    const output = normalizeVoiceDraftOutput(rawOutput, style);
+    const output = normalizeVoiceDraftOutput(rawOutput, template);
     Audit.log(req.user.name, req.user.role, 'AI_POLISH_VOICE_DRAFT',
-      `${style} for "${exp.title}" | transcript words ${countWords(transcript)} | manual note words ${countWords(manualNotes)}`,
+      `${responseStyle} for "${exp.title}" | template ${template} | transcript words ${countWords(transcript)} | raw note words ${countWords(rawNotes)} | model ${MODEL}`,
       { projectId: exp.project_id });
-    res.json({ style, output, model: MODEL, experimentId: exp.id });
+    res.json({ style: responseStyle, template, output, model: MODEL, experimentId: exp.id });
   } catch (e) {
     res.status(502).json({ error: 'AI request failed: ' + e.message });
   }
@@ -309,16 +326,95 @@ function compactSpaces(text) {
   return String(text || '').replace(/[ \t]+/g, ' ').replace(/\s*\n+\s*/g, '\n').trim();
 }
 
-function normalizeVoiceDraftOutput(raw, style) {
+function voiceTemplateInstruction(template) {
+  if (template === 'concise_paragraph') {
+    return 'Return 1 to 2 concise paragraphs suitable as the visible notebook entry. Do not use bullets or headings.';
+  }
+  if (template === 'numbered_observations') {
+    return 'Return 3 to 7 numbered observations, each as "1. ...", concise and suitable as the visible notebook entry.';
+  }
+  return [
+    'Return a concise structured lab note using only relevant section headings from this exact set:',
+    'Summary, Observations, Measurements, Deviations/Uncertainty, Next Actions.',
+    'Under each included heading, write 1 to 3 short "-" bullet lines.',
+    'Omit any heading where the source has no supporting detail.'
+  ].join(' ');
+}
+
+function normalizeVoiceDraftOutput(raw, template) {
   const cleaned = stripMarkdown(raw).replace(/\r/g, '').trim();
-  if (style === 'concise_paragraph') {
+  if (template === 'concise_paragraph') {
     return takeWords(cleaned
       .split(/\n+/)
       .map(line => line.replace(/^\d+[\).:-]\s*/, '').trim())
       .filter(Boolean)
       .join(' '), 180);
   }
+  if (template === 'auto_lab_note') {
+    return applyAutoLabNoteTemplate(cleaned);
+  }
   return applyNumberedVoiceTemplate(cleaned);
+}
+
+function applyAutoLabNoteTemplate(raw) {
+  const allowed = ['Summary', 'Observations', 'Measurements', 'Deviations/Uncertainty', 'Next Actions'];
+  const sectionMap = new Map(allowed.map(name => [name, []]));
+  let current = null;
+
+  for (const originalLine of String(raw || '').split(/\n+/)) {
+    const line = originalLine.trim();
+    if (!line) continue;
+    const normalizedHeading = normalizeVoiceHeading(line);
+    if (sectionMap.has(normalizedHeading)) {
+      current = normalizedHeading;
+      continue;
+    }
+    const point = line
+      .replace(/^\d+[\).:-]\s*/, '')
+      .replace(/^-+\s*/, '')
+      .trim();
+    if (!point || /^[A-Z][A-Za-z/ &-]{0,48}:$/.test(point)) continue;
+    if (!current) current = inferVoiceSection(point);
+    if (sectionMap.has(current) && sectionMap.get(current).length < 3) {
+      sectionMap.get(current).push(formatBulletSentence(point, 32));
+    }
+  }
+
+  const chunks = [];
+  for (const name of allowed) {
+    const points = sectionMap.get(name) || [];
+    if (!points.length) continue;
+    chunks.push(`${name}\n${points.map(point => `- ${point}`).join('\n')}`);
+  }
+  if (!chunks.length) return 'Summary\n- No source-backed voice note was generated.';
+  return chunks.join('\n\n');
+}
+
+function normalizeVoiceHeading(line) {
+  const cleaned = String(line || '').replace(/:$/, '').trim().toLowerCase();
+  if (cleaned === 'summary') return 'Summary';
+  if (cleaned === 'observation' || cleaned === 'observations') return 'Observations';
+  if (cleaned === 'measurement' || cleaned === 'measurements') return 'Measurements';
+  if (cleaned === 'deviations/uncertainty' || cleaned === 'deviations and uncertainty' || cleaned === 'uncertainty' || cleaned === 'deviations') {
+    return 'Deviations/Uncertainty';
+  }
+  if (cleaned === 'next action' || cleaned === 'next actions' || cleaned === 'actions') return 'Next Actions';
+  return line;
+}
+
+function inferVoiceSection(point) {
+  const text = String(point || '').toLowerCase();
+  if (/\b(unclear|uncertain|unsure|unknown|not clear|deviation|deviated|failed|error|issue)\b/.test(text)) return 'Deviations/Uncertainty';
+  if (/\b(\d|ml|µl|ul|mg|g|mm|cm|nm|mM|µM|uM|°c| c\b|seconds?|minutes?|hours?|ph|rpm|x g)\b/i.test(point)) return 'Measurements';
+  if (/\b(next|repeat|follow up|follow-up|check|verify|confirm|store|send|prepare)\b/.test(text)) return 'Next Actions';
+  if (/\b(observed|visible|cloudy|clear|colour|color|precipitate|contamination)\b/.test(text)) return 'Observations';
+  return 'Summary';
+}
+
+function formatBulletSentence(point, wordLimit) {
+  const text = takeWords(String(point || '').replace(/\s+/g, ' ').trim(), wordLimit).replace(/\s+([,.;:])/g, '$1');
+  if (!text) return 'No additional source-backed point.';
+  return /[.!?]$/.test(text) ? text : `${text}.`;
 }
 
 function applyNumberedVoiceTemplate(raw) {
@@ -333,7 +429,7 @@ function applyNumberedVoiceTemplate(raw) {
     .filter(line => line && !/^[A-Z][A-Za-z\s]{0,40}:$/.test(line))
     .slice(0, 7);
   if (!candidates.length) candidates.push('No source-backed voice note was generated.');
-  return candidates.map((line, index) => `${index + 1}. ${takeWords(line, 28).replace(/\.$/, '')}.`).join('\n');
+  return candidates.map((line, index) => `${index + 1}. ${formatBulletSentence(line, 28).replace(/\.$/, '')}.`).join('\n');
 }
 
 function splitSentences(text) {

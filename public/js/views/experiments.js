@@ -541,7 +541,8 @@ async function editExperimentModal(ctx, e) {
 /* --------------------------- Composer --------------------------- */
 async function mountComposer(mount, ctx, expId) {
   let capturedType = null, uploadedUrl = null;
-  let voiceTranscript = '', voiceStyle = 'numbered_bullets', polishedReady = false;
+  let voiceTranscript = '', voiceTemplate = 'auto_lab_note', polishedReady = false, reviewMode = false;
+  let recordingStartedAt = 0, recordingTimer = null;
   let stt = { provider: 'webspeech', serverStt: false };
   try { stt = await api.sttHealth(); } catch {}
   let aiConfigured = false, aiModel = 'AI';
@@ -556,35 +557,46 @@ async function mountComposer(mount, ctx, expId) {
   mount.innerHTML = `
     <div class="composer">
       <div class="between" style="margin-bottom:8px"><b>Add entry</b>
-        <span class="reclabel" id="reclabel"><span class="dot"></span> <span id="recword">Recording…</span></span></div>
-      <div class="toolbar">
-        <button class="btn sm mic" id="micStart" type="button">🎙 Start voice</button>
-        <button class="btn sm warn" id="micPause" type="button" style="display:none">⏸ Pause</button>
-        <button class="btn sm danger" id="micStop" type="button" style="display:none">⏹ Stop</button>
-        <button class="btn sm sec" id="ocrCam" type="button">📸 Camera</button>
-        <button class="btn sm sec" id="ocrBtn" type="button">🖼 Upload scan</button>
-        <button class="btn sm sec" id="sketchBtn" type="button">Sketch figure</button>
-        <input type="file" id="ocrFile" accept="image/*" style="display:none"/>
-        <span class="pill" style="margin-left:auto">${voiceMode}</span>
+        <span class="pill">${voiceMode}</span></div>
+      <div id="voiceCaptureWrap">
+        <div class="toolbar">
+          <button class="btn sm mic" id="micStart" type="button">🎙 Start voice</button>
+          <button class="btn sm warn" id="micPause" type="button" style="display:none">⏸ Pause</button>
+          <button class="btn sm danger" id="micStop" type="button" style="display:none">⏹ Stop</button>
+          <button class="btn ghost sm" id="voiceSourceBtn" type="button" data-voice-source disabled>Source transcript</button>
+          <button class="btn sm sec" id="ocrCam" type="button">📸 Camera</button>
+          <button class="btn sm sec" id="ocrBtn" type="button">🖼 Upload scan</button>
+          <button class="btn sm sec" id="sketchBtn" type="button">Sketch figure</button>
+          <input type="file" id="ocrFile" accept="image/*" style="display:none"/>
+        </div>
+        <label class="fld">Raw lab notes</label>
+        <textarea class="txt" id="voiceManualNotes" placeholder="Jot observations, sample IDs, headings, or shorthand while dictation runs in the background."></textarea>
+        <textarea class="txt voice-transcript" id="voiceTranscript" readonly hidden></textarea>
+        <div class="voice-capture-status">
+          <span class="reclabel" id="reclabel"><span class="dot"></span> <span id="recword">Recording…</span></span>
+          <span class="muted" id="voiceTranscriptCount">0 transcript words</span>
+        </div>
       </div>
-      <label class="fld">Notebook notes</label>
-      <textarea class="txt" id="voiceManualNotes" placeholder="Type notes, dictate in the background, photograph a note, or upload a scan."></textarea>
-      <details class="voice-source" id="voiceSourceWrap" style="display:none">
-        <summary>Source transcript <span class="muted" id="voiceTranscriptCount"></span></summary>
-        <textarea class="txt voice-transcript" id="voiceTranscript" readonly></textarea>
-      </details>
-      <div class="voice-polish" id="voicePolishWrap" style="display:none">
+      <div class="voice-review" id="voiceReviewWrap" hidden>
         <div class="between">
-          <div class="row">
-            <button class="btn ghost sm on" type="button" data-voice-style="numbered_bullets">Numbered bullets</button>
-            <button class="btn ghost sm" type="button" data-voice-style="concise_paragraph">Concise paragraph</button>
+          <div>
+            <b>Enhanced entry</b>
+            <div class="muted" style="font-size:12px">Review the AI-polished note before saving it to the experiment.</div>
           </div>
           <span class="pill">${esc(aiConfigured ? aiModel : 'AI off')}</span>
         </div>
-        <label class="fld">Polished notebook draft</label>
+        <label class="fld">Format</label>
+        <select class="txt" id="voiceTemplate">
+          <option value="auto_lab_note">Auto lab note</option>
+          <option value="numbered_observations">Numbered observations</option>
+          <option value="concise_paragraph">Concise paragraph</option>
+        </select>
+        <label class="fld">Notebook entry draft</label>
         <textarea class="txt" id="voicePolished"></textarea>
         <div class="row" style="margin-top:8px">
           <button class="btn sec sm" id="voiceRegenerate" type="button" ${aiConfigured ? '' : 'disabled'}>Regenerate</button>
+          <button class="btn ghost sm" id="voiceBackToCapture" type="button">Back to raw notes</button>
+          <button class="btn ghost sm" type="button" data-voice-source>Sources</button>
         </div>
       </div>
       <div id="ocrPreview"></div>
@@ -597,61 +609,80 @@ async function mountComposer(mount, ctx, expId) {
 
   const text = mount.querySelector('#voiceManualNotes');
   const transcriptEl = mount.querySelector('#voiceTranscript');
-  const transcriptWrap = mount.querySelector('#voiceSourceWrap');
   const transcriptCount = mount.querySelector('#voiceTranscriptCount');
-  const polishWrap = mount.querySelector('#voicePolishWrap');
+  const captureWrap = mount.querySelector('#voiceCaptureWrap');
+  const reviewWrap = mount.querySelector('#voiceReviewWrap');
   const polishedEl = mount.querySelector('#voicePolished');
+  const templateEl = mount.querySelector('#voiceTemplate');
   const regenerateBtn = mount.querySelector('#voiceRegenerate');
+  const backToCaptureBtn = mount.querySelector('#voiceBackToCapture');
   const saveBtn = mount.querySelector('#saveEntry');
   const stateEl = mount.querySelector('#composerState');
   const upd = () => { saveBtn.disabled = !currentSaveText().trim(); };
-  text.addEventListener('input', () => { upd(); if (!capturedType) capturedType = 'note'; });
+  text.addEventListener('input', () => { upd(); syncVoiceSourceButtons(); if (!capturedType) capturedType = 'note'; });
   polishedEl.addEventListener('input', () => { polishedReady = !!polishedEl.value.trim(); upd(); });
-  mount.querySelectorAll('[data-voice-style]').forEach(btn => btn.onclick = guard(async () => {
-    voiceStyle = btn.dataset.voiceStyle;
-    paintVoiceStyle();
-    if (voiceTranscript.trim()) await enhanceVoiceDraft();
-  }));
+  templateEl.onchange = guard(async () => {
+    voiceTemplate = templateEl.value;
+    if (reviewMode && (voiceTranscript.trim() || text.value.trim())) await enhanceVoiceDraft();
+  });
   regenerateBtn.onclick = guard(enhanceVoiceDraft);
+  backToCaptureBtn.onclick = () => {
+    reviewMode = false;
+    captureWrap.hidden = false;
+    reviewWrap.hidden = true;
+    stateEl.textContent = voiceTranscript.trim() ? 'Voice captured — raw notes and transcript preserved' : '';
+    upd();
+  };
+  mount.querySelectorAll('[data-voice-source]').forEach(btn => btn.onclick = () => {
+    openVoiceSourceModal(text.value, voiceTranscript, voiceTemplate);
+  });
 
   const micStart = mount.querySelector('#micStart');
   const micPause = mount.querySelector('#micPause');
   const micStop = mount.querySelector('#micStop');
   const reclabel = mount.querySelector('#reclabel');
   const recword = mount.querySelector('#recword');
-  function showRecording() { micStart.style.display = 'none'; micPause.style.display = ''; micStop.style.display = ''; micPause.textContent = '⏸ Pause'; micStart.classList.add('rec'); reclabel.classList.add('on'); reclabel.classList.remove('paused'); recword.textContent = 'Recording…'; }
-  function showPaused() { micPause.textContent = '▶ Resume'; reclabel.classList.add('on', 'paused'); recword.textContent = 'Paused'; }
-  function showIdle() { micStart.style.display = ''; micPause.style.display = 'none'; micStop.style.display = 'none'; micStart.classList.remove('rec'); reclabel.classList.remove('on', 'paused'); }
-  function paintVoiceStyle() {
-    mount.querySelectorAll('[data-voice-style]').forEach(btn => btn.classList.toggle('on', btn.dataset.voiceStyle === voiceStyle));
+  function showRecording() {
+    micStart.style.display = 'none'; micPause.style.display = ''; micStop.style.display = ''; micPause.textContent = '⏸ Pause';
+    micStart.classList.add('rec'); reclabel.classList.add('on'); reclabel.classList.remove('paused'); startRecordingTimer(); paintRecordingMeta('Recording');
+  }
+  function showPaused() {
+    micPause.textContent = '▶ Resume'; reclabel.classList.add('on', 'paused'); paintRecordingMeta('Paused');
+  }
+  function showIdle() {
+    micStart.style.display = ''; micPause.style.display = 'none'; micStop.style.display = 'none'; micStart.classList.remove('rec'); reclabel.classList.remove('on', 'paused'); stopRecordingTimer();
   }
   function setVoiceTranscript(value) {
     voiceTranscript = String(value || '').trimStart();
     transcriptEl.value = voiceTranscript;
-    transcriptWrap.style.display = voiceTranscript.trim() ? '' : 'none';
-    transcriptCount.textContent = voiceTranscript.trim() ? `${countWords(voiceTranscript)} words` : '';
+    paintRecordingMeta(reclabel.classList.contains('paused') ? 'Paused' : reclabel.classList.contains('on') ? 'Recording' : '');
+    syncVoiceSourceButtons();
     upd();
   }
   async function afterVoiceStop() {
     capturedType = 'voice';
-    if (!voiceTranscript.trim()) { stateEl.textContent = 'No speech detected'; upd(); return; }
+    stopRecordingTimer();
+    if (!voiceTranscript.trim()) { stateEl.textContent = 'No speech detected'; syncVoiceSourceButtons(); upd(); return; }
     if (aiConfigured) await enhanceVoiceDraft();
-    else { polishWrap.style.display = 'none'; stateEl.textContent = 'Voice captured — review & save raw transcript'; upd(); }
+    else { reviewWrap.hidden = true; captureWrap.hidden = false; stateEl.textContent = 'Voice captured — review & save raw transcript'; upd(); }
   }
   async function enhanceVoiceDraft() {
     const transcript = voiceTranscript.trim();
-    const manualNotes = text.value.trim();
-    if (!transcript && !manualNotes) return;
+    const rawNotes = text.value.trim();
+    if (!transcript && !rawNotes) return;
     if (!aiConfigured) { stateEl.textContent = 'AI polishing is not configured'; return; }
-    polishWrap.style.display = '';
+    reviewMode = true;
+    captureWrap.hidden = true;
+    reviewWrap.hidden = false;
+    templateEl.value = voiceTemplate;
     polishedEl.disabled = true;
     regenerateBtn.disabled = true;
-    stateEl.textContent = 'Polishing voice draft…';
+    stateEl.textContent = 'Enhancing voice entry…';
     try {
-      const res = await api.processVoiceDraft(expId, transcript, manualNotes, voiceStyle);
+      const res = await api.processVoiceDraft(expId, transcript, rawNotes, voiceTemplate);
       polishedEl.value = res.output || '';
       polishedReady = !!polishedEl.value.trim();
-      stateEl.textContent = polishedReady ? 'Polished draft ready — review & save' : 'No polished draft returned';
+      stateEl.textContent = polishedReady ? 'Enhanced draft ready — review & save' : 'No enhanced draft returned';
     } finally {
       polishedEl.disabled = false;
       regenerateBtn.disabled = false;
@@ -659,9 +690,34 @@ async function mountComposer(mount, ctx, expId) {
     }
   }
   function currentSaveText() {
-    if (polishedReady && polishedEl.value.trim()) return polishedEl.value.trim();
+    if (reviewMode && polishedReady && polishedEl.value.trim()) return polishedEl.value.trim();
     if (voiceTranscript.trim()) return buildVoiceFallbackText(text.value, voiceTranscript);
     return text.value.trim();
+  }
+  function syncVoiceSourceButtons() {
+    const hasSource = !!(voiceTranscript.trim() || text.value.trim());
+    mount.querySelectorAll('[data-voice-source]').forEach(btn => { btn.disabled = !hasSource; });
+  }
+  function startRecordingTimer() {
+    if (!recordingStartedAt) recordingStartedAt = Date.now();
+    if (!recordingTimer) recordingTimer = setInterval(() => paintRecordingMeta(reclabel.classList.contains('paused') ? 'Paused' : 'Recording'), 1000);
+  }
+  function stopRecordingTimer() {
+    if (recordingTimer) clearInterval(recordingTimer);
+    recordingTimer = null;
+  }
+  function paintRecordingMeta(label = '') {
+    const words = countWords(voiceTranscript);
+    const elapsed = recordingStartedAt ? ` · ${formatElapsed(Date.now() - recordingStartedAt)}` : '';
+    transcriptCount.textContent = `${words} transcript word${words === 1 ? '' : 's'}${elapsed}`;
+    if (label) recword.textContent = `${label}${elapsed}`;
+  }
+  function resetEnhancedDraft() {
+    polishedReady = false;
+    polishedEl.value = '';
+    reviewMode = false;
+    reviewWrap.hidden = true;
+    captureWrap.hidden = false;
   }
 
   if (useLiveSpeech) wireWebSpeech();
@@ -679,7 +735,7 @@ async function mountComposer(mount, ctx, expId) {
         else { showIdle(); }
       }
     });
-    micStart.onclick = () => { polishedReady = false; polishedEl.value = ''; polishWrap.style.display = 'none'; voice.start(voiceTranscript); };
+    micStart.onclick = () => { resetEnhancedDraft(); recordingStartedAt = Date.now(); voice.start(voiceTranscript); };
     micPause.onclick = () => (voice.state === 'recording' ? voice.pause() : voice.resume());
     micStop.onclick = guard(async () => { voice.stop(); await afterVoiceStop(); });
     mount._voice = voice;
@@ -697,7 +753,11 @@ async function mountComposer(mount, ctx, expId) {
   }
   function wireRecorder() {
     const rec = new Recorder(); mount._rec = rec;
-    micStart.onclick = guard(async () => { capturedType = 'voice'; try { await rec.start(); } catch { stateEl.textContent = 'Mic blocked — check permissions'; return; } showRecording(); stateEl.textContent = 'Recording… click Stop to transcribe'; });
+    micStart.onclick = guard(async () => {
+      capturedType = 'voice'; resetEnhancedDraft(); recordingStartedAt = Date.now();
+      try { await rec.start(); } catch { stateEl.textContent = 'Mic blocked — check permissions'; return; }
+      showRecording(); stateEl.textContent = 'Recording… click Stop to transcribe';
+    });
     micPause.onclick = () => { if (rec.state === 'recording') { rec.pause(); showPaused(); stateEl.textContent = 'Paused'; } else if (rec.state === 'paused') { rec.resume(); showRecording(); stateEl.textContent = 'Recording…'; } };
     micStop.onclick = guard(async () => {
       showIdle(); stateEl.textContent = 'Transcribing…';
@@ -735,8 +795,7 @@ async function mountComposer(mount, ctx, expId) {
 
   /* ---- Save / clear ---- */
   mount.querySelector('#clearEntry').onclick = () => {
-    text.value = ''; capturedType = null; uploadedUrl = null; polishedReady = false; polishedEl.value = ''; setVoiceTranscript('');
-    polishWrap.style.display = 'none';
+    text.value = ''; capturedType = null; uploadedUrl = null; recordingStartedAt = 0; resetEnhancedDraft(); setVoiceTranscript('');
     mount.querySelector('#ocrPreview').innerHTML = ''; stateEl.textContent = ''; upd();
     if (mount._voice && mount._voice.state !== 'idle') mount._voice.stop();
     if (mount._rec && mount._rec.state !== 'idle') mount._rec.stop();
@@ -745,7 +804,7 @@ async function mountComposer(mount, ctx, expId) {
   saveBtn.onclick = guard(async () => {
     const val = currentSaveText().trim(); if (!val) return;
     if (mount._voice && mount._voice.state !== 'idle') mount._voice.stop();
-    if (polishedReady && polishedEl.value.trim() && voiceTranscript.trim()) {
+    if (reviewMode && polishedReady && polishedEl.value.trim() && voiceTranscript.trim()) {
       const rawEntry = await api.addEntry(expId, { type: 'voice_transcript', text: buildVoiceSourceText(text.value, voiceTranscript) });
       await api.addEntry(expId, { type: 'voice', text: polishedEl.value.trim(), sourceEntryIds: [rawEntry.id] });
     } else {
@@ -753,6 +812,7 @@ async function mountComposer(mount, ctx, expId) {
     }
     toast('Entry saved & time-stamped'); ctx.go('experiments', { id: expId });
   });
+  syncVoiceSourceButtons();
 }
 
 function buildVoiceSourceText(manualNotes, transcript) {
@@ -773,6 +833,41 @@ function buildVoiceFallbackText(manualNotes, transcript) {
 
 function countWords(text) {
   return String(text || '').trim().split(/\s+/).filter(Boolean).length;
+}
+
+function formatElapsed(ms) {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const m = String(Math.floor(total / 60)).padStart(2, '0');
+  const s = String(total % 60).padStart(2, '0');
+  return `${m}:${s}`;
+}
+
+function openVoiceSourceModal(manualNotes, transcript, template = 'auto_lab_note') {
+  const source = buildVoiceSourceText(manualNotes, transcript);
+  modal(`<div class="between">
+      <h3>Source transcript</h3>
+      <span class="pill">${esc(templateLabel(template))}</span>
+    </div>
+    <p class="muted" style="font-size:12px;margin-top:0">Raw lab notes and transcript are source evidence for the enhanced voice entry.</p>
+    <textarea class="txt" readonly style="min-height:280px" id="voiceSourceModalText">${esc(source)}</textarea>
+    <div class="row" style="margin-top:16px;justify-content:flex-end">
+      <button class="btn ghost" data-copy-source>Copy source</button>
+      <button class="btn ghost" data-x>Close</button>
+    </div>`);
+  const m = document.getElementById('modal');
+  m.querySelector('[data-x]').onclick = closeModal;
+  m.querySelector('[data-copy-source]').onclick = guard(async () => {
+    await navigator.clipboard?.writeText(source);
+    toast('Source copied');
+  });
+}
+
+function templateLabel(template) {
+  return {
+    auto_lab_note: 'Auto lab note',
+    numbered_observations: 'Numbered observations',
+    concise_paragraph: 'Concise paragraph'
+  }[template] || 'Auto lab note';
 }
 
 function entryImages(en) {

@@ -36,8 +36,10 @@ export const api = {
   verifyEmail: token => req('POST', '/api/auth/verify-email', { token }),
   revokeSession: (all = false) => req('POST', '/api/auth/sessions/revoke', { all }),
   // admin users
-  users: () => req('GET', '/api/users'),
+  users: (includeArchived = false) => req('GET', `/api/users${query({ includeArchived })}`),
   setUserRole: (id, role) => req('PATCH', `/api/users/${id}/role`, { role }),
+  archiveUser: id => req('POST', `/api/users/${id}/archive`),
+  restoreUser: id => req('POST', `/api/users/${id}/restore`),
   // orgs + projects
   orgs: () => req('GET', '/api/orgs'),
   createOrg: d => req('POST', '/api/orgs', d),
@@ -80,8 +82,8 @@ export const api = {
   aiHealth: () => req('GET', '/api/ai/health'),
   aiChat: (experimentId, messages) => req('POST', '/api/ai/chat', { experimentId, messages }),
   processEntries: (entryIds, mode) => req('POST', '/api/ai/process-entries', { entryIds, mode }),
-  processVoiceDraft: (experimentId, transcript, manualNotes, style) =>
-    req('POST', '/api/ai/process-voice-draft', { experimentId, transcript, manualNotes, style }),
+  processVoiceDraft: (experimentId, transcript, rawNotes, template = 'auto_lab_note') =>
+    req('POST', '/api/ai/process-voice-draft', { experimentId, transcript, rawNotes, template }),
   observeFrame: (experimentId, imageData, transcript, recentEvents) =>
     req('POST', '/api/ai/observe', { experimentId, imageData, transcript, recentEvents }),
   // references (papers)

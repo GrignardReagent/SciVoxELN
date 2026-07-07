@@ -135,6 +135,30 @@ test('MVP pilot workflow: projects, access, signatures, exports, audit and sessi
     assert.match(paragraphDraft.output, /^Measured pH 7\.4 and stored tube B2 on ice\./);
     assert.doesNotMatch(paragraphDraft.output, /^\d+\./m);
 
+    const autoDraft = await scientist.req(base, 'POST', '/api/ai/process-voice-draft', {
+      experimentId: exp.id,
+      transcript: 'Tube C7 was vortexed for 10 seconds. Yield was unclear. No contamination was visible.',
+      rawNotes: 'C7: keep uncertainty; no visible contamination',
+      template: 'auto_lab_note'
+    });
+    assert.equal(autoDraft.template, 'auto_lab_note');
+    assert.equal(autoDraft.style, 'auto_lab_note');
+    assert.match(autoDraft.output, /^Summary\n/);
+    assert.match(autoDraft.output, /Observations\n- No visible contamination was recorded\./);
+    assert.match(autoDraft.output, /Measurements\n- Tube C7 was vortexed for 10 seconds\./);
+    assert.match(autoDraft.output, /Deviations\/Uncertainty\n- Yield was unclear\./);
+    assert.doesNotMatch(autoDraft.output, /Next Actions\n\s*(?:\n|$)/);
+
+    await assert.rejects(
+      () => scientist.req(base, 'POST', '/api/ai/process-voice-draft', {
+        experimentId: exp.id,
+        transcript: 'Invalid template should not silently fall back.',
+        rawNotes: '',
+        template: 'meeting_minutes'
+      }),
+      /400/
+    );
+
     const rawVoice = await scientist.req(base, 'POST', `/api/experiments/${exp.id}/entries`, {
       type: 'voice_transcript',
       text: 'Manual notes:\nA1 looked cloudy.\n\nSource transcript:\nAdded confidential phrase XYZ-123 and incubated sample A1.'
@@ -252,6 +276,7 @@ test('MVP pilot workflow: projects, access, signatures, exports, audit and sessi
     assert.ok(audit.some(a => a.action === 'ADD_FIGURE_ENTRY'));
     assert.ok(audit.some(a => a.action === 'AI_POLISH_VOICE_DRAFT' && a.detail.includes('numbered_bullets')));
     assert.ok(audit.some(a => a.action === 'AI_POLISH_VOICE_DRAFT' && a.detail.includes('concise_paragraph')));
+    assert.ok(audit.some(a => a.action === 'AI_POLISH_VOICE_DRAFT' && a.detail.includes('auto_lab_note')));
     assert.ok(audit.some(a => a.action === 'ADD_VOICE_TRANSCRIPT_SOURCE' && a.detail.includes(rawVoice.id)));
     assert.equal(audit.some(a => a.detail.includes('confidential phrase XYZ-123')), false);
     assert.ok(audit.some(a =>
@@ -430,7 +455,21 @@ function mockOpenAI() {
     for await (const chunk of req) body += chunk;
     const payload = JSON.parse(body || '{}');
     const userText = payload.messages?.map(m => m.content).join('\n') || '';
-    const content = userText.includes('concise_paragraph')
+    const content = userText.includes('auto_lab_note')
+      ? [
+          'Summary',
+          '- Tube C7 was processed with uncertainty preserved.',
+          '',
+          'Observations',
+          '- No visible contamination was recorded.',
+          '',
+          'Measurements',
+          '- Tube C7 was vortexed for 10 seconds.',
+          '',
+          'Deviations/Uncertainty',
+          '- Yield was unclear.'
+        ].join('\n')
+      : userText.includes('concise_paragraph')
       ? 'Measured pH 7.4 and stored tube B2 on ice. No additional result was stated.'
       : ['Added 5 mL buffer to sample A1.', 'Incubated at 37 C for 15 minutes.', 'A1 looked cloudy after incubation.'].map((line, i) => `${i + 1}. ${line}`).join('\n');
     res.writeHead(200, { 'content-type': 'application/json' });

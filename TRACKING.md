@@ -64,8 +64,14 @@ and repo-native workflow tracking.
 - [ ] Feature improvement: "Summarise" button to summarise transcripts and notes
   into a concise summary.
 - [ ] Feature improvement: Observe run.
+- [ ] Feature improvement: AI assistant - predictive suggestions for user entries.
+- [ ] Feature improvement: Enhance voice entry with auto-punctuation, auto-capitalization, and auto-paragraphing.
+- [ ] Feature improvement: Enhance OCR functionality with better handwriting recognition.
 - [ ] Repository hygiene: remove tracked runtime `data/` files from history /
   future commits in a dedicated cleanup, leaving runtime state gitignored.
+
+### Future Enhancements
+
 - [ ] Feature - Lab Animal Tracking: track animal movements
 
 ## Done
@@ -107,6 +113,9 @@ and repo-native workflow tracking.
   `src/auth.js`; admin Users screen + `/api/users` API; first user and
   `ADMIN_EMAILS` become admin; last admin cannot be demoted. All data routes
   require auth.
+- Admin user lifecycle: reversible user archive/restore hides inactive accounts
+  by default, revokes archived-user sessions, blocks archived login/reset/OAuth
+  access, and preserves project membership/history.
 - Server-side session rows and revocation API (`/api/auth/sessions/revoke`).
 - Password reset / email verification token APIs (SMTP delivery not bundled).
 - Theming: light/dark presets with the requested palettes, user-editable
@@ -141,8 +150,69 @@ and repo-native workflow tracking.
   project, entry count and entry hashes before removal; experiment entry cards
   show the delete affordance to all users, disabled with an admin-only hint for
   non-admins.
+- [x] Enable admin users to archive and restore users without deleting lab
+  history. Archived users are hidden by default, marked in project memberships,
+  blocked from sign-in/session use, and covered by audit events.
 
 ## Change Log
+
+### 2026-07-07T09:44:30Z - Require browser frontend checks
+
+- Task: SVX-000
+- Branch: `master`
+- Summary: Updated assistant working notes so frontend-impacting changes must
+  always be verified in a real browser before completion, with Computer Use
+  preferred when available/requested and Playwright/Chromium as the documented
+  fallback.
+- Validation: Documentation-only change; reviewed `CLAUDE.md` instructions.
+- Files:
+  - `TRACKING.md`
+  - `CLAUDE.md`
+
+### 2026-07-07T09:35:22Z - Add user archiving
+
+- Task: SVX-000
+- Branch: `master`
+- Summary: Added reversible user archiving for admins, including persisted
+  archive metadata, archived-account auth blocking, session revocation,
+  project-member archived badges, Users-screen show-archived toggle, and
+  archive/restore audit events.
+- Validation: Bundled Node `--test` passed with 18 tests, including archive API,
+  migration and static UI coverage.
+- Files:
+  - `TRACKING.md`
+  - `public/js/api.js`
+  - `public/js/views/projects.js`
+  - `public/js/views/users.js`
+  - `src/auth.js`
+  - `src/db.js`
+  - `src/routes/auth.js`
+  - `src/routes/projects.js`
+  - `src/routes/users.js`
+  - `tests/user-archive-ui.test.js`
+  - `tests/user-archive.test.js`
+
+### 2026-07-07T09:35:02Z - Revise voice entry review flow
+
+- Task: SVX-000
+- Branch: `master` (sandbox blocked feature branch creation because `.git` is read-only)
+- Summary: Reworked the voice composer into a Granola-like ELN flow with raw lab
+  notes as the primary capture surface, a quiet source transcript modal, an
+  enhanced-entry review state, and template-based regeneration for Auto lab
+  note, Numbered observations, or Concise paragraph.
+- Validation: Bundled Node `--test` passed with 18 tests; Playwright smoke
+  with mocked `SpeechRecognition` passed desktop and mobile voice capture ->
+  enhanced preview -> linked raw/polished save flow.
+- Files:
+  - `TRACKING.md`
+  - `README.md`
+  - `public/css/styles.css`
+  - `public/js/api.js`
+  - `public/js/views/experiments.js`
+  - `public/js/views/settings.js`
+  - `src/routes/ai.js`
+  - `tests/experiment-entry-delete-ui.test.js`
+  - `tests/mvp-api.test.js`
 
 ### 2026-07-06T21:34:00Z - Add polished voice drafts
 

@@ -139,7 +139,13 @@ docker compose up --build       # containerised
 
 Backend is testable headless with curl (see git history / prior sessions):
 create experiment → add entry → lock (expect 409) → sign → inventory adjust →
-plan start → audit CSV. Frontend voice/OCR need a real browser.
+plan start → audit CSV. **Frontend changes must always be checked in a real
+browser before claiming completion.** Open the app in Chrome/Edge and exercise
+the changed flow, including at least one meaningful interaction and screenshot
+evidence. Prefer Computer Use when the user requests it or it is available; if
+Computer Use cannot bootstrap, use Playwright/Chromium and record the fallback
+reason. Use a disposable `DATA_DIR` for smoke checks that create users, entries
+or other lab data. Frontend voice/OCR need a real browser.
 
 ## Sandbox / environment gotchas (important for AI sessions)
 
@@ -154,6 +160,11 @@ plan start → audit CSV. Frontend voice/OCR need a real browser.
   silences it (set in Dockerfile).
 - WAL fails on some sandbox/network filesystems ("disk I/O error"); the fallback
   handles it. Use a local ext4 path (e.g. `/tmp`) when testing.
+- For any change touching `public/`, frontend-facing routes, auth/navigation
+  flows, theming, voice/OCR/AI panels, or UI copy, run a rendered browser smoke
+  test in addition to Node tests. Verify page identity, non-blank render, no
+  relevant console errors, and the target interaction. Include the browser URL,
+  viewport, result and screenshot paths in the final report.
 
 ## Conventions
 
