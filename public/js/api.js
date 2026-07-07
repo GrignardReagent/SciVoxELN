@@ -56,6 +56,7 @@ export const api = {
   lockExperiment: id => req('POST', `/api/experiments/${id}/lock`),
   deleteExperiment: (id, d) => req('DELETE', `/api/experiments/${id}`, d),
   saveExperimentTemplate: (id, d) => req('POST', `/api/experiments/${id}/template`, d),
+  duplicateExperiment: (id, d) => req('POST', `/api/experiments/${id}/duplicate`, d),
   experimentLinks: id => req('GET', `/api/experiments/${id}/links`),
   addExperimentLink: (id, d) => req('POST', `/api/experiments/${id}/links`, d),
   deleteExperimentLink: (id, linkId) => req('DELETE', `/api/experiments/${id}/links/${linkId}`),

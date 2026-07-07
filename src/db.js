@@ -798,6 +798,43 @@ export const Experiments = {
       );
     return this.get(_id);
   },
+  duplicateSetup(expId, { title = '', projectId = null, createdBy = '' } = {}) {
+    const source = this.get(expId);
+    if (!source) return null;
+    const steps = ExperimentSteps.list(source.id);
+    const copyTitle = String(title || '').trim() || `${source.title} repeat`;
+    db.exec('BEGIN');
+    try {
+      const duplicate = this.create({
+        project_id: projectId || source.project_id,
+        title: copyTitle,
+        project: projectId && projectId !== source.project_id ? Projects.get(projectId)?.name || source.project : source.project,
+        status: 'active',
+        objective: source.objective || '',
+        hypothesis: source.hypothesis || '',
+        protocol: source.protocol || '',
+        materials: source.materials || '',
+        success_criteria: source.success_criteria || '',
+        safety_notes: source.safety_notes || '',
+        tags: source.tags || '',
+        outcome_status: 'running',
+        outcome_summary: ''
+      });
+      for (const step of steps) {
+        ExperimentSteps.create(duplicate.id, { text: step.text, createdBy });
+      }
+      ExperimentLinks.create(duplicate.id, {
+        linkedExperimentId: source.id,
+        note: `Repeat setup duplicated from "${source.title}" (${source.id})`,
+        createdBy
+      });
+      db.exec('COMMIT');
+      return { experiment: this.get(duplicate.id), stepsCopied: steps.length };
+    } catch (err) {
+      db.exec('ROLLBACK');
+      throw err;
+    }
+  },
   update(expId, fields) {
     const exp = db.prepare('SELECT * FROM experiments WHERE id = ?').get(expId);
     if (!exp) return null;

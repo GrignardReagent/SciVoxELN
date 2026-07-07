@@ -79,6 +79,28 @@ r.post('/:id/template', (req, res) => {
   res.status(201).json(template);
 });
 
+r.post('/:id/duplicate', (req, res) => {
+  const exp = Experiments.get(req.params.id, req.user);
+  if (!exp) return res.status(404).json({ error: 'Experiment not found' });
+  const projectId = String(req.body?.project_id || exp.project_id || '').trim();
+  if (!Projects.get(projectId)) return res.status(404).json({ error: 'Project not found' });
+  if (!Projects.canAccessProject(req.user, projectId, 'scientist')) return res.status(403).json({ error: 'Project write access required' });
+  const result = Experiments.duplicateSetup(exp.id, {
+    title: String(req.body?.title || '').trim(),
+    projectId,
+    createdBy: req.user.name
+  });
+  if (!result?.experiment) return res.status(404).json({ error: 'Experiment not found' });
+  Audit.log(
+    req.user.name,
+    req.user.role,
+    'DUPLICATE_EXPERIMENT',
+    `duplicated setup from "${exp.title}" (${exp.id}) as "${result.experiment.title}" (${result.experiment.id}) | steps copied: ${result.stepsCopied}`,
+    { projectId: result.experiment.project_id }
+  );
+  res.status(201).json(publicExperiment(Experiments.get(result.experiment.id, req.user) || result.experiment));
+});
+
 r.get('/:id/links', (req, res) => {
   const exp = Experiments.get(req.params.id, req.user);
   if (!exp) return res.status(404).json({ error: 'Experiment not found' });

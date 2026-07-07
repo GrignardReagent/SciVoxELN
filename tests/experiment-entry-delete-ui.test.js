@@ -126,6 +126,14 @@ test('experiment detail can save setup as a reusable template', () => {
   assert.match(source, /CREATE_EXPERIMENT_TEMPLATE|Experiment template/);
 });
 
+test('experiment detail can repeat an existing setup without copying observations', () => {
+  assert.match(source, /data-duplicate-experiment/);
+  assert.match(source, /Repeat setup/);
+  assert.match(source, /duplicateExperimentModal/);
+  assert.match(source, /api\.duplicateExperiment/);
+  assert.match(source, /same setup, tags, and procedure steps/);
+});
+
 test('experiment entries expose audited collaboration comments', () => {
   assert.match(source, /entryCommentsHTML/);
   assert.match(source, /data-comment-entry/);

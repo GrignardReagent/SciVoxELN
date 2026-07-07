@@ -158,6 +158,7 @@ export const renderExperiment = guard(async (root, ctx, id) => {
           <div class="row" style="margin-top:12px">
             ${canEditExperiment ? '<button class="btn sec sm" data-edit>Edit details</button>' : '<button class="btn sec sm" disabled title="Read-only project role">Edit details</button>'}
             ${canWrite ? '<button class="btn sec sm" data-save-template>Save as template</button>' : ''}
+            ${canWrite ? '<button class="btn sec sm" data-duplicate-experiment>Repeat setup</button>' : ''}
             ${locked ? '<span class="pill">🔒 Locked — read only</span>' : canWrite ? '<button class="btn sec sm" data-observe>👁 Observe run</button>' : ''}
             ${locked ? '' : canReviewExperiment ? '<button class="btn ok sm" data-lock>🔒 Lock experiment</button>' : '<button class="btn ok sm" disabled title="Reviewer role required">🔒 Lock experiment</button>'}
             ${deleteButton}
@@ -215,6 +216,8 @@ export const renderExperiment = guard(async (root, ctx, id) => {
   if (editBtn) editBtn.onclick = guard(() => editExperimentModal(ctx, e));
   const saveTemplateBtn = root.querySelector('[data-save-template]');
   if (saveTemplateBtn) saveTemplateBtn.onclick = guard(() => saveExperimentTemplateModal(ctx, e));
+  const duplicateBtn = root.querySelector('[data-duplicate-experiment]');
+  if (duplicateBtn) duplicateBtn.onclick = guard(() => duplicateExperimentModal(ctx, e));
   const observeBtn = root.querySelector('[data-observe]');
   if (observeBtn) observeBtn.onclick = () => openObserverMode(e, ctx);
   const lockBtn = root.querySelector('[data-lock]');
@@ -1139,6 +1142,27 @@ async function saveExperimentTemplateModal(ctx, e) {
     ctx.go('experiments', { id: e.id });
   });
   setTimeout(() => m.querySelector('#templateName').focus(), 40);
+}
+
+async function duplicateExperimentModal(ctx, e) {
+  modal(`<h3>Repeat setup</h3>
+    <p class="muted" style="font-size:12px;margin-top:0">Create a new active experiment with the same setup, tags, and procedure steps. Notebook observations, signatures, comments, attachments, and references stay with the original record.</p>
+    <label class="fld">New experiment title</label><input class="txt" id="duplicateTitle" value="${esc(e.title)} repeat"/>
+    <div class="hint" style="margin-top:10px">The new run starts active with outcome set to Running and includes a related-experiment link back to this source.</div>
+    <div class="row" style="margin-top:16px;justify-content:flex-end">
+      <button class="btn ghost" data-x>Cancel</button><button class="btn" data-duplicate-confirm>Repeat setup</button>
+    </div>`);
+  const m = document.getElementById('modal');
+  m.querySelector('[data-x]').onclick = closeModal;
+  m.querySelector('[data-duplicate-confirm]').onclick = guard(async () => {
+    const title = m.querySelector('#duplicateTitle').value.trim();
+    if (!title) return toast('Title required', true);
+    const repeated = await api.duplicateExperiment(e.id, { title });
+    closeModal();
+    toast('Repeat setup created');
+    ctx.go('experiments', { id: repeated.id });
+  });
+  setTimeout(() => m.querySelector('#duplicateTitle').focus(), 40);
 }
 
 /* --------------------------- Composer --------------------------- */

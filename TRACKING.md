@@ -84,7 +84,8 @@ and repo-native workflow tracking.
 - Structured experiment setup metadata: hypothesis, protocol/method, materials
   and reagents, success criteria, and safety notes persist with experiments and
   export evidence; proven setups can be saved as project-scoped experiment
-  templates and reused to start follow-up experiments.
+  templates or repeated directly from an existing run to start follow-up
+  experiments without copying observations, signatures or attachments.
 - Voice entry with Start / Pause / Resume / Stop: Web Speech where supported,
   mobile-safe server STT via OpenAI (`auto`/`openai`) or on-prem Whisper, and
   AI-polished or local-template lab-report drafts linked to hidden raw
@@ -189,6 +190,10 @@ and repo-native workflow tracking.
 - [x] Link related experiments from an experiment record. Scientists can connect
   follow-up, repeat, control or protocol-related records, navigate between
   them, export the relationships, and remove links without deleting experiments.
+- [x] Repeat an existing experiment setup. Scientists can create a clean active
+  follow-up run from an existing experiment; setup metadata, tags and open
+  procedure steps are copied, outcome resets to Running, the repeat links back
+  to the source record, and notebook observations/attachments stay behind.
 - [x] Attach raw data and supporting files to experiments. Scientists can attach
   instrument output, PDFs, spreadsheets or other evidence to unlocked
   experiments, with SHA-256 file hashes, notes, audited add/remove events,
@@ -209,6 +214,46 @@ and repo-native workflow tracking.
   text remains visible without internal field scrolling.
 
 ## Change Log
+
+### 2026-07-07T16:03:45Z - Add experiment repeat setup
+
+- Task: SVX-000
+- Branch: `master`
+- Reference scan: eLabFTW documents a toolbar Duplicate entry action that
+  creates a new running entry from an existing experiment's setup and also
+  documents linked experiment/resource workflows for follow-up iterations.
+- Summary: Added a `POST /api/experiments/:id/duplicate` lifecycle for clean
+  repeat runs. It requires project scientist access, allows repeating locked
+  source experiments by creating a new active experiment, copies setup metadata,
+  tags and active procedure steps as open steps, resets outcome to Running,
+  links the new run back to the source, and audits `DUPLICATE_EXPERIMENT`.
+  The experiment detail screen now has a `Repeat setup` action and confirmation
+  modal that opens the new run after creation.
+- Validation: Added failing API and static UI coverage first, confirmed RED
+  failures for missing `/duplicate` and missing `data-duplicate-experiment`,
+  then made focused `tests\mvp-api.test.js` and
+  `tests\experiment-entry-delete-ui.test.js` pass. Bundled Node `--test`
+  passed with 52 tests. Chrome and Computer Use setup were attempted first, but
+  both connectors still rejected the WSL workspace URI. Rendered headed
+  Edge/Playwright smoke at `http://127.0.0.1:57932/` verified registration,
+  experiment creation, step and note creation, the Repeat setup modal, creation
+  of the repeated run, copied setup/procedure step, active/Running reset,
+  source related-experiment link, zero copied notebook entries, zero copied
+  attachments, mobile rendering without horizontal overflow, and no relevant
+  console/page errors.
+- Browser evidence:
+  - `C:\Users\s1732775\AppData\Local\Temp\scivox-repeat-smoke-1783440200942\repeat-source-with-button.png`
+  - `C:\Users\s1732775\AppData\Local\Temp\scivox-repeat-smoke-1783440200942\repeat-modal.png`
+  - `C:\Users\s1732775\AppData\Local\Temp\scivox-repeat-smoke-1783440200942\repeat-new-run.png`
+  - `C:\Users\s1732775\AppData\Local\Temp\scivox-repeat-smoke-1783440200942\repeat-new-run-mobile.png`
+- Files:
+  - `TRACKING.md`
+  - `src/db.js`
+  - `src/routes/experiments.js`
+  - `public/js/api.js`
+  - `public/js/views/experiments.js`
+  - `tests/mvp-api.test.js`
+  - `tests/experiment-entry-delete-ui.test.js`
 
 ### 2026-07-07T15:46:50Z - Auto-expand text boxes
 

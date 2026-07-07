@@ -109,6 +109,10 @@ test('MVP pilot workflow: projects, access, signatures, exports, audit and sessi
       /403/
     );
     await assert.rejects(
+      () => scientist.req(base, 'POST', `/api/experiments/${exp.id}/duplicate`, { title: 'Viewer duplicate attempt' }),
+      /403/
+    );
+    await assert.rejects(
       () => scientist.req(base, 'POST', '/api/ai/process-voice-draft', {
         experimentId: exp.id,
         transcript: 'Viewer should not polish voice drafts.',
@@ -403,6 +407,33 @@ test('MVP pilot workflow: projects, access, signatures, exports, audit and sessi
     const afterAttachmentRemove = await scientist.req(base, 'GET', `/api/experiments/${exp.id}/attachments`);
     assert.equal(afterAttachmentRemove.some(a => a.id === removableAttachment.id), false);
 
+    const repeatedExp = await scientist.req(base, 'POST', `/api/experiments/${exp.id}/duplicate`, {
+      title: 'mRNA stability repeat setup'
+    });
+    assert.equal(repeatedExp.title, 'mRNA stability repeat setup');
+    assert.equal(repeatedExp.project_id, exp.project_id);
+    assert.equal(repeatedExp.objective, updatedSetup.objective);
+    assert.equal(repeatedExp.hypothesis, updatedSetup.hypothesis);
+    assert.equal(repeatedExp.protocol, updatedSetup.protocol);
+    assert.equal(repeatedExp.materials, updatedSetup.materials);
+    assert.equal(repeatedExp.success_criteria, updatedSetup.success_criteria);
+    assert.equal(repeatedExp.safety_notes, updatedSetup.safety_notes);
+    assert.equal(repeatedExp.tags, updatedSetup.tags);
+    assert.equal(repeatedExp.status, 'active');
+    assert.equal(repeatedExp.outcome_status, 'running');
+    assert.equal(repeatedExp.outcome_summary, '');
+    assert.equal(repeatedExp.entries.length, 0);
+    const repeatedSteps = await scientist.req(base, 'GET', `/api/experiments/${repeatedExp.id}/steps`);
+    assert.deepEqual(repeatedSteps.map(step => step.text), ['Thaw aliquots on ice and record thaw duration.']);
+    assert.equal(repeatedSteps[0].done, 0);
+    assert.equal(repeatedSteps[0].completed_at, null);
+    const repeatedLinks = await scientist.req(base, 'GET', `/api/experiments/${repeatedExp.id}/links`);
+    assert.equal(repeatedLinks.length, 1);
+    assert.equal(repeatedLinks[0].linked_experiment_id, exp.id);
+    assert.match(repeatedLinks[0].note, /Repeat setup duplicated from/);
+    const repeatedAttachments = await scientist.req(base, 'GET', `/api/experiments/${repeatedExp.id}/attachments`);
+    assert.equal(repeatedAttachments.length, 0);
+
     const figure = await scientist.req(base, 'POST', `/api/experiments/${exp.id}/entries`, {
       type: 'figure',
       text: 'Microscope slide layout with sample regions A-D.',
@@ -592,6 +623,7 @@ test('MVP pilot workflow: projects, access, signatures, exports, audit and sessi
     assert.ok(audit.some(a => a.action === 'SIGN_ENTRY'));
     assert.ok(audit.some(a => a.action === 'CREATE_EXPERIMENT_TEMPLATE' && a.detail.includes(template.id)));
     assert.ok(audit.some(a => a.action === 'CREATE_EXPERIMENT' && a.detail.includes(templatedExp.id)));
+    assert.ok(audit.some(a => a.action === 'DUPLICATE_EXPERIMENT' && a.detail.includes(exp.id) && a.detail.includes(repeatedExp.id)));
     assert.ok(audit.some(a => a.action === 'ADD_EXPERIMENT_LINK' && a.detail.includes(relatedLink.id)));
     assert.ok(audit.some(a => a.action === 'REMOVE_EXPERIMENT_LINK' && a.detail.includes(removableLink.id)));
     assert.ok(audit.some(a => a.action === 'ADD_EXPERIMENT_STEP' && a.detail.includes(stepOne.id)));
