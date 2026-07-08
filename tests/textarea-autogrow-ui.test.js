@@ -41,6 +41,17 @@ test('shared auto-grow handles revealed editors and direct value assignments', (
 
 test('shared auto-grow recalculates when hidden textarea containers are revealed', () => {
   assert.match(ui, /record\.type === 'attributes'/);
-  assert.match(ui, /attributeFilter:\s*\[\s*'hidden',\s*'style',\s*'class'\s*\]/);
+  assert.match(ui, /attributeFilter:\s*\[\s*'hidden',\s*'class'\s*\]/);
   assert.match(ui, /autoGrowTextareas\(record\.target\)/);
+});
+
+test('auto-grow observer does not watch style (prevents infinite refit loop)', () => {
+  // growTextarea() writes el.style.height on every fit. If the MutationObserver
+  // also watched 'style', each write would re-trigger a refit that writes style
+  // again — an infinite feedback loop that hard-freezes the tab. Reveal/resize
+  // is covered by childList, the 'hidden'/'class' watches, and the ResizeObserver.
+  const filterMatch = ui.match(/attributeFilter:\s*\[([^\]]*)\]/);
+  assert.ok(filterMatch, 'expected an attributeFilter on the auto-grow observer');
+  assert.ok(!/['"]style['"]/.test(filterMatch[1]),
+    "auto-grow observer must not include 'style' in attributeFilter");
 });

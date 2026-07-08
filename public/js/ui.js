@@ -52,11 +52,17 @@ export function installTextareaAutoGrow(root = document.body) {
       });
     });
   });
+  // NB: do NOT observe 'style'. growTextarea() writes el.style.height on every
+  // fit; watching 'style' here would make each write re-trigger the observer,
+  // which refits, which writes style again — an infinite feedback loop that
+  // floods the microtask queue and hard-freezes the tab. Reveal/resize cases
+  // are already covered by childList, the 'hidden'/'class' watches, and the
+  // ResizeObserver (width 0 -> N on reveal) in observeTextareaResize().
   autoGrowObserver.observe(root, {
     childList: true,
     subtree: true,
     attributes: true,
-    attributeFilter: ['hidden', 'style', 'class']
+    attributeFilter: ['hidden', 'class']
   });
 }
 

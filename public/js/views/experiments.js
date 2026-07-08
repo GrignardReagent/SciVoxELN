@@ -13,7 +13,14 @@ let showArchivedExperiments = false;
 export const renderExperiments = guard(async (root, ctx) => {
   ctx.setHead('Experiments', 'All lab experiments');
   root.innerHTML = '<div class="muted">Loading…</div>';
-  const [allExps, projects] = await Promise.all([api.experiments(showArchivedExperiments), api.projects()]);
+  let allExps;
+  let projects;
+  try {
+    [allExps, projects] = await withDbRetry(() =>
+      Promise.all([api.experiments(showArchivedExperiments), api.projects()]));
+  } catch (err) {
+    return renderExperimentsLoadError(root, ctx, err.message || 'Failed to load experiments');
+  }
   let exps = allExps;
   const q = ctx.search;
   if (q) exps = exps.filter(e => setupSearchText(e).toLowerCase().includes(q));
@@ -175,7 +182,16 @@ function applyExperimentTemplate(modalEl, template) {
 
 /* --------------------------- Single view --------------------------- */
 export const renderExperiment = guard(async (root, ctx, id) => {
-  const e = await api.experiment(id);
+  root.innerHTML = '<div class="muted">Loading experiment…</div>';
+  let e;
+  try {
+    e = await withDbRetry(() => api.experiment(id));
+  } catch (err) {
+    return renderExperimentLoadError(root, ctx, id, err.message || 'Failed to load experiment');
+  }
+  if (!e || typeof e !== 'object' || !Array.isArray(e.entries)) {
+    return renderExperimentLoadError(root, ctx, id, 'This experiment could not be loaded (unexpected server response).');
+  }
   ctx.setHead(e.title, `${e.project_name || e.project || 'General'} · created ${fmtShort(e.created_at)}`);
   const archived = !!e.archived_at;
   const locked = e.status === 'locked';
@@ -299,6 +315,59 @@ export const renderExperiment = guard(async (root, ctx, id) => {
   mountExperimentAttachments(root, e, viewAccess);
   mountReferences(root, e, viewAccess);
 });
+
+function renderExperimentLoadError(root, ctx, id, message) {
+  root.innerHTML = `
+    <button class="btn ghost sm" data-back>← Back to experiments</button>
+    <div class="card" style="margin-top:14px">
+      <h2 class="sec-t">Couldn't open this experiment</h2>
+      <p class="muted" style="margin-top:0">${esc(message)}</p>
+      <div class="hint" style="margin-top:0">If this keeps happening, the database may be locked — this is common when the app's <code>data/</code> folder is inside a syncing cloud drive (e.g. OneDrive). Point <code>DATA_DIR</code> at a local folder outside the synced path, or run via Docker.</div>
+      <div class="row" style="margin-top:12px">
+        <button class="btn" data-retry>Retry</button>
+        <button class="btn ghost" data-back2>Back to experiments</button>
+      </div>
+    </div>`;
+  const back = () => ctx.go('experiments');
+  root.querySelector('[data-back]').onclick = back;
+  root.querySelector('[data-back2]').onclick = back;
+  root.querySelector('[data-retry]').onclick = () => ctx.go('experiments', { id });
+}
+
+function renderExperimentsLoadError(root, ctx, message) {
+  root.innerHTML = `
+    <div class="card" style="margin-top:14px">
+      <h2 class="sec-t">Couldn't open experiments</h2>
+      <p class="muted" style="margin-top:0">${esc(message)}</p>
+      <div class="hint" style="margin-top:0">If this keeps happening, the database may be locked — this is common when the app's <code>data/</code> folder is inside a syncing cloud drive (e.g. OneDrive). Point <code>DATA_DIR</code> at a local folder outside the synced path, or run via Docker.</div>
+      <div class="row" style="margin-top:12px">
+        <button class="btn" data-retry>Retry</button>
+      </div>
+    </div>`;
+  root.querySelector('[data-retry]').onclick = () => ctx.go('experiments');
+}
+
+function isDbLockError(err) {
+  return /database is locked/i.test(String(err?.message || ''));
+}
+
+async function withDbRetry(fn, attempts = 3) {
+  let lastErr;
+  for (let i = 0; i < attempts; i += 1) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (!isDbLockError(err) || i >= attempts - 1) throw err;
+      await sleep((i + 1) * 250);
+    }
+  }
+  throw lastErr;
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
 
 function exportMenu(expId) {
   const base = `/api/experiments/${esc(expId)}/export`;

@@ -286,6 +286,86 @@ and repo-native workflow tracking.
 
 ## Change Log
 
+### 2026-07-08 - Fix tab-freezing auto-grow observer feedback loop
+
+- Task: SVX-000
+- Branch: `master`
+- Summary: Opening an experiment froze the whole tab (blank/spinning; even
+  browser script injection timed out). Root cause: the shared textarea
+  auto-grow `MutationObserver` in `public/js/ui.js` watched
+  `attributeFilter: ['hidden','style','class']`, but `growTextarea()` writes
+  `el.style.height` on every fit. Each style write re-triggered the observer,
+  which refit and wrote style again — an infinite microtask storm that blocks
+  the main thread. Views with no textareas (the experiments list, login) were
+  fine; opening an experiment or any modal with textareas triggered the loop.
+  Introduced by the 2026-07-08T15:12 change that added `'style'` to the filter;
+  the `ResizeObserver` added earlier already covers reveal/resize, so watching
+  `'style'` was redundant as well as harmful.
+- Fix: removed `'style'` from the observer `attributeFilter` (now
+  `['hidden','class']`). Reveal/resize refitting is still handled by
+  `childList`, the `hidden`/`class` watches, and the `ResizeObserver`
+  (width 0 -> N on reveal). Added a regression test asserting the observer must
+  not watch `'style'` and updated the existing filter assertion.
+- Validation: static edit + test update. Could NOT run `node --test` or live
+  browser verification this session — the sandbox refuses the WSL UNC working
+  directory, and the running Docker container serves the pre-fix JS from its
+  built image (the frozen tab also blocked inspection). Requires a rebuild
+  (`docker compose --profile tunnel up -d --build`) + hard browser refresh to
+  deploy, then browser verification of opening an experiment.
+- Files:
+  - `TRACKING.md`
+  - `public/js/ui.js`
+  - `tests/textarea-autogrow-ui.test.js`
+
+### 2026-07-08T20:27:38Z - Retry experiment fetches on transient DB locks
+
+- Task: SVX-000
+- Branch: `master`
+- Summary: Experiments could fail to open when SQLite briefly returned
+  "database is locked". Added retry-with-backoff around experiment list and
+  detail fetches in `public/js/views/experiments.js`, and added a dedicated
+  list-level inline error card with retry action instead of leaving the screen
+  in a loading/toast-only state.
+- Validation: `node --test tests/entries-ui.test.js
+  tests/experiment-entry-delete-ui.test.js` passes; browser verification passed
+  on `http://127.0.0.1:57941/` using Playwright bundled Chromium with the flow
+  login -> Experiments list -> mobile drawer open. Screenshots:
+  `/tmp/scivox-browser-desktop.png`, `/tmp/scivox-browser-mobile.png`.
+
+### 2026-07-08T20:11:24Z - Point local runtime data at WSL ext4
+
+- Task: SVX-000
+- Branch: `master`
+- Summary: Updated local `.env` so `DATA_DIR` resolves to the absolute
+  WSL-local path `/home/ian/SciVoxELN/data` after moving the repository off the
+  Windows/OneDrive mount.
+- Validation: confirmed `/home/ian/SciVoxELN` and `/tmp` are on ext4; `.env`
+  loads the absolute data path; WSL-native Node v24.18.0 passes the 83-test
+  suite when `~/.nvm/versions/node/v24.18.0/bin` is on `PATH` and temp env vars
+  point at `/tmp`; browser smoke passed with Playwright bundled Chromium against
+  a disposable `/tmp/scivox-browser-check-*` data directory.
+
+### 2026-07-08 - Fix experiment page failing to open on locked/contended DB
+
+- Task: SVX-000
+- Branch: `master`
+- Summary: Opening an experiment could fail silently. `renderExperiment` awaited
+  `api.experiment(id)` with no error handling, so any failure of that one request
+  (or an unexpected response shape) threw at `e.entries.map(...)` and left the
+  page blank with only a transient toast. Root cause on this machine is a locked
+  SQLite DB: the `data/` folder lives inside OneDrive (4 KB `scivox.db` with a
+  1.6 MB un-checkpointed WAL — OneDrive holds the file open to sync it), so reads
+  intermittently hit "database is locked".
+- Fix: (1) `public/js/views/experiments.js` now shows a clear inline error card
+  with the real message and a Retry button when an experiment fails to load,
+  instead of failing silently. (2) `src/db.js` sets `PRAGMA busy_timeout = 5000`
+  so reads wait for a lock instead of erroring immediately.
+- Recommended: point `DATA_DIR` at a local folder outside OneDrive, or run via
+  Docker (data lives in the `scivox-data` volume), so the DB is never sync-locked.
+- Validation: applied edits onto the committed base and `node --check`ed both
+  files; isolated jsdom tests confirm the error card + Retry behaviour and that
+  valid experiments still render; full `node --test` suite passes 83/83.
+
 ### 2026-07-08T15:12:00Z - Recalculate auto-grow when hidden text boxes are revealed
 
 - Task: SVX-000

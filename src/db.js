@@ -23,6 +23,11 @@ try {
   try { db.exec('PRAGMA journal_mode = DELETE;'); } catch { /* keep default */ }
 }
 db.exec('PRAGMA foreign_keys = ON;');
+// Wait (up to 5s) for a lock instead of failing immediately with "database is
+// locked". Important when the DB file is contended by a cloud sync client
+// (e.g. OneDrive) or another process, which otherwise makes reads like opening
+// an experiment fail intermittently.
+try { db.exec('PRAGMA busy_timeout = 5000;'); } catch { /* older driver: ignore */ }
 
 const now = () => new Date().toISOString();
 const id = () => randomUUID();
