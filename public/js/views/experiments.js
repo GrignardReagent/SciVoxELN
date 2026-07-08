@@ -1,5 +1,5 @@
 import { api } from '../api.js';
-import { esc, fmt, fmtShort, toast, modal, closeModal, confirmModal, guard } from '../ui.js';
+import { esc, fmt, fmtShort, toast, modal, closeModal, confirmModal, guard, autoGrowTextareas } from '../ui.js';
 import { getUser, isAdmin } from '../state.js';
 import { VoiceController, voiceSupported } from '../voice.js';
 import { Recorder, recorderSupported } from '../recorder.js';
@@ -7,11 +7,13 @@ import { runOCR, fileToDataURL, dataURLtoBlob, cameraSupported, startCamera, sto
 import { openObserverMode } from '../observer.js';
 import { openSketchFigureModal } from '../sketchpad.js';
 
+let showArchivedExperiments = false;
+
 /* ----------------------------- List ----------------------------- */
 export const renderExperiments = guard(async (root, ctx) => {
   ctx.setHead('Experiments', 'All lab experiments');
   root.innerHTML = '<div class="muted">Loading…</div>';
-  const [allExps, projects] = await Promise.all([api.experiments(), api.projects()]);
+  const [allExps, projects] = await Promise.all([api.experiments(showArchivedExperiments), api.projects()]);
   let exps = allExps;
   const q = ctx.search;
   if (q) exps = exps.filter(e => setupSearchText(e).toLowerCase().includes(q));
@@ -19,25 +21,60 @@ export const renderExperiments = guard(async (root, ctx) => {
   root.innerHTML = `
     <div class="between" style="margin-bottom:16px">
       <span class="pill">${exps.length} experiment${exps.length !== 1 ? 's' : ''}</span>
-      ${canCreate
-        ? '<button class="btn" data-new>+ New experiment</button>'
-        : '<button class="btn" data-new-disabled disabled title="Read-only project role">+ New experiment</button>'}
+      <div class="row">
+        <label class="row" style="gap:7px;font-size:12px;color:var(--muted)">
+          <input data-show-archived-experiments type="checkbox" ${showArchivedExperiments ? 'checked' : ''}/>
+          Show archived
+        </label>
+        ${canCreate
+          ? '<button class="btn" data-new>+ New experiment</button>'
+          : '<button class="btn" data-new-disabled disabled title="Read-only project role">+ New experiment</button>'}
+      </div>
     </div>
     ${exps.length ? `<div class="grid cardlist">${exps.map(card).join('')}</div>`
-      : `<div class="empty"><div class="big">⚗</div>${q ? 'No matches.' : canCreate ? 'No experiments yet.' : 'Read-only project role — no writable experiments yet.'}</div>`}`;
+      : `<div class="empty"><div class="big">⚗</div>${q ? 'No matches.' : showArchivedExperiments ? 'No experiments in this view.' : canCreate ? 'No active experiments yet.' : 'Read-only project role — no writable experiments yet.'}</div>`}`;
+  root.querySelector('[data-show-archived-experiments]').onchange = e => {
+    showArchivedExperiments = e.target.checked;
+    ctx.refresh();
+  };
   const newBtn = root.querySelector('[data-new]');
   if (newBtn) newBtn.onclick = guard(() => newExperimentModal(ctx, projects.filter(canWriteProject)));
   root.querySelectorAll('[data-exp]').forEach(el => el.onclick = () => ctx.go('experiments', { id: el.dataset.exp }));
 });
 
 function card(e) {
+  const archived = !!e.archived_at;
   return `<div class="card hover" data-exp="${e.id}">
     <div class="between"><h3>${esc(e.title)}</h3><span class="status s-${e.status}">${e.status}</span></div>
+    ${experimentRecordIdHTML(e)}
+    ${archived ? '<span class="archived-badge">Archived — read only</span>' : ''}
     <div class="muted" style="font-size:13px">${esc(e.objective || 'No objective set')}</div>
     ${outcomeStatusHTML(e)}
     ${experimentTagsHTML(e.tags)}
+    ${experimentNextStepHTML(e)}
     <div class="meta"><span class="tag">${esc(e.project_name || e.project || 'General')}</span>
       <span>📝 ${e.entryCount || 0}</span><span>· ${fmtShort(e.created_at)}</span></div></div>`;
+}
+
+function experimentNextStepHTML(e) {
+  const total = Number(e.stepCount) || 0;
+  if (!total) return '';
+  const completed = Number(e.completedStepCount) || 0;
+  const open = Number(e.openStepCount) || 0;
+  if (e.next_step) {
+    return `<div class="next-step-preview" data-next-experiment-step="${esc(e.next_step_id || '')}" title="Next open procedure step">
+      <b>Next step</b><span>${esc(e.next_step)}</span><em>${open} open · ${completed}/${total} done</em>
+    </div>`;
+  }
+  return `<div class="next-step-preview done" data-next-experiment-step="" title="Procedure step progress">
+    <b>Steps</b><span>All procedure steps complete.</span><em>${open} open · ${completed}/${total} done</em>
+  </div>`;
+}
+
+function experimentRecordIdHTML(e) {
+  const code = String(e?.eln_id || '').trim();
+  if (!code) return '';
+  return `<span class="record-id" data-eln-id="${esc(code)}" title="Stable ELN record ID"><b>ELN ID</b> ${esc(code)}</span>`;
 }
 
 function canCreateExperiment(projects) {
@@ -85,6 +122,7 @@ async function newExperimentModal(ctx, writableProjects = null) {
     <label class="fld">Materials / reagents</label><textarea class="txt compact" id="mMaterials" placeholder="Critical samples, reagent lots, equipment, or cells"></textarea>
     <label class="fld">Success criteria</label><textarea class="txt compact" id="mSuccessCriteria" placeholder="What result would count as a pass or useful outcome?"></textarea>
     <label class="fld">Safety notes</label><textarea class="txt compact" id="mSafetyNotes" placeholder="Hazards, PPE, waste handling, or approvals"></textarea>
+    ${metadataFieldsHTML()}
     <label class="fld">Experiment outcome</label><select class="txt" id="mOutcomeStatus">
       ${outcomeStatusOptions('running')}
     </select>
@@ -95,6 +133,7 @@ async function newExperimentModal(ctx, writableProjects = null) {
   m.querySelector('[data-x]').onclick = closeModal;
   const templateMap = new Map(templates.map(t => [t.id, t]));
   m.querySelector('#mTemplate').onchange = () => applyExperimentTemplate(m, templateMap.get(m.querySelector('#mTemplate').value));
+  wireMetadataEditor(m);
   m.querySelector('[data-ok]').onclick = guard(async () => {
     const title = m.querySelector('#mTitle').value.trim();
     if (!title) return toast('Title required', true);
@@ -110,6 +149,7 @@ async function newExperimentModal(ctx, writableProjects = null) {
       materials: m.querySelector('#mMaterials').value.trim(),
       success_criteria: m.querySelector('#mSuccessCriteria').value.trim(),
       safety_notes: m.querySelector('#mSafetyNotes').value.trim(),
+      metadata: readMetadataFields(m),
       outcome_status: m.querySelector('#mOutcomeStatus').value,
       outcome_summary: m.querySelector('#mOutcomeSummary').value.trim()
     });
@@ -127,18 +167,22 @@ function applyExperimentTemplate(modalEl, template) {
   modalEl.querySelector('#mMaterials').value = template.materials || '';
   modalEl.querySelector('#mSuccessCriteria').value = template.success_criteria || '';
   modalEl.querySelector('#mSafetyNotes').value = template.safety_notes || '';
+  applyMetadataFields(modalEl, template.metadata);
   const hint = modalEl.querySelector('#mTemplateHint');
   if (hint) hint.textContent = template.description || 'Template setup applied. Edit any field before creating the experiment.';
+  autoGrowTextareas(modalEl);
 }
 
 /* --------------------------- Single view --------------------------- */
 export const renderExperiment = guard(async (root, ctx, id) => {
   const e = await api.experiment(id);
   ctx.setHead(e.title, `${e.project_name || e.project || 'General'} · created ${fmtShort(e.created_at)}`);
+  const archived = !!e.archived_at;
   const locked = e.status === 'locked';
   const access = experimentAccess(e);
-  const canWrite = access.can_write;
-  const canReview = access.can_review;
+  const canWrite = access.can_write && !archived;
+  const canReview = access.can_review && !archived;
+  const viewAccess = { ...access, can_write: canWrite, can_review: canReview };
   const canEditExperiment = canWrite && !locked;
   const canReviewExperiment = canReview && !locked;
   const deleteButton = experimentDeleteButton(locked, access);
@@ -148,32 +192,43 @@ export const renderExperiment = guard(async (root, ctx, id) => {
       <div>
         <div class="card" style="margin-bottom:16px">
           <div class="experiment-card-head">
-            <div class="row"><h2 class="sec-t" style="margin:0">${esc(e.title)}</h2><span class="status s-${e.status}">${e.status}</span></div>
+            <div class="row"><h2 class="sec-t" style="margin:0">${esc(e.title)}</h2><span class="status s-${e.status}">${e.status}</span>${experimentRecordIdHTML(e)}${archived ? '<span class="archived-badge">Archived — read only</span>' : ''}</div>
             ${exportMenu(e.id)}
           </div>
           <div class="muted" style="font-size:13px;margin-top:6px">${esc(e.objective || 'No objective set')}</div>
           ${experimentTagsHTML(e.tags)}
           ${experimentSetupHTML(e)}
+          ${experimentMetadataHTML(e.metadata)}
           ${experimentOutcomeHTML(e)}
           <div class="row" style="margin-top:12px">
             ${canEditExperiment ? '<button class="btn sec sm" data-edit>Edit details</button>' : '<button class="btn sec sm" disabled title="Read-only project role">Edit details</button>'}
             ${canWrite ? '<button class="btn sec sm" data-save-template>Save as template</button>' : ''}
             ${canWrite ? '<button class="btn sec sm" data-duplicate-experiment>Repeat setup</button>' : ''}
-            ${locked ? '<span class="pill">🔒 Locked — read only</span>' : canWrite ? '<button class="btn sec sm" data-observe>👁 Observe run</button>' : ''}
+            ${archived ? '<span class="pill danger">Archived — read only</span>' : locked ? '<span class="pill">🔒 Locked — read only</span>' : canWrite ? '<button class="btn sec sm" data-observe>👁 Observe run</button>' : ''}
             ${locked ? '' : canReviewExperiment ? '<button class="btn ok sm" data-lock>🔒 Lock experiment</button>' : '<button class="btn ok sm" disabled title="Reviewer role required">🔒 Lock experiment</button>'}
+            ${experimentArchiveButton(e, access)}
             ${deleteButton}
           </div>
-          ${!canWrite ? '<div class="hint">Read-only project role — you can inspect records and exports, but writing entries requires scientist access.</div>' : ''}
+          ${archived ? '<div class="hint">Archived — read only. Restore before adding entries, references, attachments, or edits.</div>' : !canWrite ? '<div class="hint">Read-only project role — you can inspect records and exports, but writing entries requires scientist access.</div>' : ''}
         </div>
         <div class="card procedure-card" style="margin-top:16px">
-          <div class="between"><h2 class="sec-t" style="margin:0">Procedure steps</h2><button class="btn sm" type="button" data-add-experiment-step>+ Step</button></div>
+          <div class="between">
+            <h2 class="sec-t" style="margin:0">Procedure steps</h2>
+            <div class="row">
+              ${canEditExperiment && e.entries.length ? '<button class="btn sec sm" type="button" data-suggest-experiment-steps>Suggest steps</button>' : ''}
+              <button class="btn sm" type="button" data-add-experiment-step>+ Step</button>
+            </div>
+          </div>
           <p class="muted" style="font-size:11px;margin:6px 0 0">Track run actions as a checklist; completed steps stay in the experiment audit trail.</p>
           <div id="experimentStepsList" style="margin-top:10px"></div>
         </div>
         ${canWrite && !locked ? '<div id="composerMount"></div>' : ''}
         <div class="card" style="margin-top:16px">
-          <h2 class="sec-t">Notebook entries <span class="muted" style="font-weight:400">(${e.entries.length})</span></h2>
-          <div id="entryFeed">${e.entries.map(en => entryHTML(en, locked, access)).join('') || '<div class="empty">No entries yet.</div>'}</div>
+          <div class="between">
+            <h2 class="sec-t" style="margin:0">Notebook entries <span class="muted" style="font-weight:400">(${e.entries.length})</span></h2>
+            ${e.entries.length ? '<button class="btn sec sm" type="button" data-summarise-experiment>Summarise entries</button>' : ''}
+          </div>
+          <div id="entryFeed">${e.entries.map(en => entryHTML(en, locked || archived, viewAccess)).join('') || '<div class="empty">No entries yet.</div>'}</div>
         </div>
       </div>
       <div class="experiment-side">
@@ -225,18 +280,24 @@ export const renderExperiment = guard(async (root, ctx, id) => {
     'Locking makes this experiment read-only. No new entries can be added.',
     guard(async () => { await api.lockExperiment(e.id); toast('Experiment locked'); ctx.go('experiments', { id: e.id }); }));
   wireExportMenu(root);
+  wireExperimentArchiveButton(root, ctx, e);
   wireExperimentDeleteButton(root, ctx, e);
-  wireSignButtons(root, ctx, e.id, access);
+  wireSignButtons(root, ctx, e.id, viewAccess);
   wireDeleteButtons(root, ctx, e.id);
   wireEditEntries(root, ctx, e.id);
   wireCommentButtons(root, ctx, e.id);
   wireSourceLinks(root);
+  wireEntryRevisionButtons(root);
+  const summariseBtn = root.querySelector('[data-summarise-experiment]');
+  if (summariseBtn) summariseBtn.onclick = guard(() => summariseExperimentEntries(e, ctx));
+  const suggestStepsBtn = root.querySelector('[data-suggest-experiment-steps]');
+  if (suggestStepsBtn) suggestStepsBtn.onclick = guard(() => suggestExperimentSteps(e, ctx));
   if (canWrite && !locked) mountComposer(root.querySelector('#composerMount'), ctx, e.id);
-  mountExperimentSteps(root, e, access);
-  mountAssistant(root, e, access);
-  mountExperimentLinks(root, e, access, ctx);
-  mountExperimentAttachments(root, e, access);
-  mountReferences(root, e, access);
+  mountExperimentSteps(root, e, viewAccess);
+  mountAssistant(root, e, viewAccess);
+  mountExperimentLinks(root, e, viewAccess, ctx);
+  mountExperimentAttachments(root, e, viewAccess);
+  mountReferences(root, e, viewAccess);
 });
 
 function exportMenu(expId) {
@@ -247,15 +308,17 @@ function exportMenu(expId) {
       <a href="${base}?format=pdf" download>Export PDF</a>
       <a href="${base}?format=html" download>Export HTML</a>
       <a href="${base}" download>Export JSON</a>
+      <a href="${base}?format=rocrate" download>Export RO-Crate</a>
+      <a href="${base}?format=zip" download>Export ZIP bundle</a>
     </div>
   </div>`;
 }
 
 function setupSearchText(e) {
   return [
-    e.title, e.project, e.project_name, e.objective, e.hypothesis, e.protocol,
+    e.eln_id, e.title, e.project, e.project_name, e.objective, e.hypothesis, e.protocol,
     e.materials, e.success_criteria, e.safety_notes, e.tags,
-    e.outcome_status, outcomeStatusLabel(e.outcome_status), e.outcome_summary
+    metadataSearchText(e.metadata), e.outcome_status, outcomeStatusLabel(e.outcome_status), e.outcome_summary
   ].filter(Boolean).join(' ');
 }
 
@@ -299,6 +362,34 @@ function experimentTagsHTML(tags) {
   return `<div class="experiment-tags" aria-label="Experiment tags">${parsed.map(tag => `<span class="experiment-tag">${esc(tag)}</span>`).join('')}</div>`;
 }
 
+function experimentMetadataHTML(metadata) {
+  const fields = metadataEntries(metadata);
+  if (!fields.length) return '';
+  return `<div class="metadata-panel">
+    <div class="study-setup-title">Custom metadata</div>
+    <div class="metadata-grid">${fields.map(([label, field]) => `
+      <div class="metadata-item">
+        <div class="metadata-label">${esc(label)}</div>
+        <div class="metadata-value">${esc(formatMetadataValue(field) || 'Not set')}</div>
+      </div>`).join('')}</div>
+  </div>`;
+}
+
+function metadataSearchText(metadata) {
+  return metadataEntries(metadata).map(([label, field]) => `${label} ${field.value || ''} ${field.unit || ''}`).join(' ');
+}
+
+function metadataEntries(metadata) {
+  const fields = metadata?.extra_fields && typeof metadata.extra_fields === 'object' ? metadata.extra_fields : {};
+  return Object.entries(fields)
+    .filter(([label, field]) => String(label || '').trim() && field && typeof field === 'object')
+    .sort((a, b) => (Number(a[1].position) || 0) - (Number(b[1].position) || 0) || a[0].localeCompare(b[0]));
+}
+
+function formatMetadataValue(field) {
+  return [field?.value, field?.unit].filter(Boolean).join(' ');
+}
+
 function experimentSetupHTML(e) {
   const items = [
     ['Hypothesis', e.hypothesis],
@@ -325,6 +416,76 @@ function experimentOutcomeHTML(e) {
     </div>
     <div class="study-setup-value" style="margin-top:8px">${esc(e.outcome_summary || 'No outcome note yet.')}</div>
   </div>`;
+}
+
+function metadataFieldsHTML(metadata = null) {
+  const rows = metadataEntries(metadata);
+  return `<div class="metadata-editor" data-metadata-editor>
+    <div class="between">
+      <label class="fld" style="margin:12px 0 5px">Custom metadata</label>
+      <button class="btn ghost sm" type="button" data-add-metadata>+ Field</button>
+    </div>
+    <div class="metadata-list" data-metadata-list>
+      ${rows.map(([label, field]) => metadataFieldRow(label, field)).join('')}
+    </div>
+    <div class="hint" style="margin-top:6px">Optional structured fields for sample IDs, strain, cell line, instrument, temperature, or assay readout.</div>
+  </div>`;
+}
+
+function metadataFieldRow(label = '', field = {}, index = 0) {
+  return `<div class="metadata-row" data-metadata-row>
+    <input class="txt" data-metadata-name placeholder="Field" value="${esc(label)}"/>
+    <input class="txt" data-metadata-value placeholder="Value" value="${esc(field?.value || '')}"/>
+    <input class="txt" data-metadata-unit placeholder="Unit" value="${esc(field?.unit || '')}"/>
+    <button class="btn ghost sm" type="button" data-remove-metadata title="Remove metadata field">Remove</button>
+  </div>`;
+}
+
+function wireMetadataEditor(root) {
+  const list = root.querySelector('[data-metadata-list]');
+  if (!list) return;
+  const add = root.querySelector('[data-add-metadata]');
+  if (add) add.onclick = () => {
+    list.insertAdjacentHTML('beforeend', metadataFieldRow('', {}, list.querySelectorAll('[data-metadata-row]').length));
+    wireMetadataEditor(root);
+    const last = list.querySelector('[data-metadata-row]:last-child [data-metadata-name]');
+    if (last) last.focus();
+  };
+  list.querySelectorAll('[data-remove-metadata]').forEach(btn => {
+    btn.onclick = () => btn.closest('[data-metadata-row]')?.remove();
+  });
+}
+
+function readMetadataFields(root) {
+  const extra_fields = {};
+  root.querySelectorAll('[data-metadata-row]').forEach((row, index) => {
+    const name = row.querySelector('[data-metadata-name]')?.value.trim();
+    const value = row.querySelector('[data-metadata-value]')?.value.trim();
+    const unit = row.querySelector('[data-metadata-unit]')?.value.trim();
+    if (!name || (!value && !unit)) return;
+    extra_fields[name] = {
+      type: inferMetadataInputType(value),
+      value: value || '',
+      ...(unit ? { unit } : {}),
+      position: index + 1
+    };
+  });
+  return { extra_fields };
+}
+
+function applyMetadataFields(modalEl, metadata = null) {
+  const list = modalEl.querySelector('[data-metadata-list]');
+  if (!list) return;
+  list.innerHTML = metadataEntries(metadata).map(([label, field]) => metadataFieldRow(label, field)).join('');
+  wireMetadataEditor(modalEl);
+}
+
+function inferMetadataInputType(value) {
+  const text = String(value || '').trim();
+  if (/^-?\d+(?:\.\d+)?$/.test(text)) return 'number';
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return 'date';
+  if (/^https?:\/\//i.test(text)) return 'url';
+  return 'text';
 }
 
 function wireExportMenu(root) {
@@ -355,6 +516,34 @@ function experimentDeleteButton(locked, access = { can_admin_delete: isAdmin() }
     return '<button class="btn danger sm" type="button" disabled aria-disabled="true" title="Locked experiments cannot be deleted">Delete experiment</button>';
   }
   return '<button class="btn danger sm" type="button" data-delete-experiment>Delete experiment</button>';
+}
+
+function experimentArchiveButton(exp, access = experimentAccess({})) {
+  if (!access.can_write) return '';
+  if (exp.archived_at) return '<button class="btn ok sm" type="button" data-restore-experiment>Restore experiment</button>';
+  return '<button class="btn sec sm" type="button" data-archive-experiment>Archive experiment</button>';
+}
+
+function wireExperimentArchiveButton(root, ctx, exp) {
+  const archiveBtn = root.querySelector('[data-archive-experiment]');
+  if (archiveBtn) archiveBtn.onclick = () => confirmModal('Archive experiment?',
+    `<b>${esc(exp.title)}</b> will be hidden from the default experiment list and become read-only until restored. Entries, signatures, comments, attachments and audit history stay intact.`,
+    guard(async () => {
+      await api.archiveExperiment(exp.id);
+      toast('Experiment archived');
+      ctx.go('experiments');
+    }),
+    'Archive');
+
+  const restoreBtn = root.querySelector('[data-restore-experiment]');
+  if (restoreBtn) restoreBtn.onclick = () => confirmModal('Restore experiment?',
+    `<b>${esc(exp.title)}</b> will return to the default experiment list and become editable for users with write access.`,
+    guard(async () => {
+      await api.restoreExperiment(exp.id);
+      toast('Experiment restored');
+      ctx.go('experiments', { id: exp.id });
+    }),
+    'Restore');
 }
 
 function wireExperimentDeleteButton(root, ctx, exp) {
@@ -798,6 +987,7 @@ async function mountAssistant(root, exp, access = experimentAccess(exp)) {
         textEl.value = prompt;
         textEl.setSelectionRange(0, 0);
         textEl.scrollTop = 0;
+        autoGrowTextareas(textEl);
         textEl.focus();
         if (!configured) textEl.disabled = true;
       };
@@ -817,6 +1007,7 @@ async function mountAssistant(root, exp, access = experimentAccess(exp)) {
     if (!q || sendEl.disabled) return;
     history.push({ role: 'user', content: q });
     textEl.value = '';
+    autoGrowTextareas(textEl);
     paint();
     sendEl.disabled = true; textEl.disabled = true;
     msgsEl.insertAdjacentHTML('beforeend', '<div class="ai-msg assistant thinking" id="aiThinking">Thinking…</div>');
@@ -836,7 +1027,7 @@ async function mountAssistant(root, exp, access = experimentAccess(exp)) {
 }
 
 function assistantPrompts(exp) {
-  const setupFields = 'objective, hypothesis, protocol, materials, success criteria, safety notes';
+  const setupFields = 'objective, hypothesis, protocol, materials, success criteria, safety notes, custom metadata';
   return [
     {
       label: 'Summarize record',
@@ -874,6 +1065,10 @@ function entryHTML(en, locked, access = experimentAccess({})) {
   const canEdit = access.can_write && !en.signed_by && !locked && getUser();
   const canComment = access.can_write && !locked && getUser();
   const canDelete = access.can_admin_delete;
+  const revisionCount = Number(en.revision_count || 0);
+  const revisionButton = revisionCount
+    ? `<button class="btn sec sm" type="button" data-entry-revisions="${esc(en.id)}">View revisions (${revisionCount})</button>`
+    : '';
   const deleteButton = canDelete
     ? `<button class="btn danger sm" data-delete-entry="${esc(en.id)}">Delete entry</button>`
     : `<button class="btn danger sm" type="button" disabled aria-disabled="true" title="Admin only">Delete entry</button><span class="muted" style="font-size:11px">Admin only</span>`;
@@ -901,6 +1096,7 @@ function entryHTML(en, locked, access = experimentAccess({})) {
     <div class="hashline">fingerprint ${en.hash}${en.signed_by ? ` · signed ${fmt(en.signed_at)} · sig ${en.sig}` : ''}</div>
     <div class="row" style="margin-top:8px">
       ${canSign ? `<button class="btn ok sm" data-sign="${en.id}">🔒 Sign &amp; lock entry</button>` : ''}
+      ${revisionButton}
       ${commentButton}
       ${deleteButton}
     </div>
@@ -1011,6 +1207,156 @@ async function openSourceEntryModal(btn) {
   document.getElementById('modal').querySelector('[data-x]').onclick = closeModal;
 }
 
+function wireEntryRevisionButtons(root) {
+  root.querySelectorAll('[data-entry-revisions]').forEach(btn => {
+    btn.onclick = guard(() => openEntryRevisionsModal(btn));
+  });
+}
+
+async function openEntryRevisionsModal(btn) {
+  const revisions = await api.entryRevisions(btn.dataset.entryRevisions);
+  modal(`<div class="between">
+      <h3>Entry revisions</h3>
+      <span class="pill">${revisions.length} previous version${revisions.length === 1 ? '' : 's'}</span>
+    </div>
+    ${entryRevisionsHTML(revisions)}
+    <div class="row" style="margin-top:16px;justify-content:flex-end">
+      <button class="btn ghost" data-x>Close</button>
+    </div>`);
+  const m = document.getElementById('modal');
+  m.querySelector('[data-x]').onclick = closeModal;
+  autoGrowTextareas(m);
+}
+
+function entryRevisionsHTML(revisions) {
+  if (!revisions.length) return '<div class="empty">No previous versions recorded for this entry.</div>';
+  return `<div class="entry-revisions">
+    ${revisions.map(rev => `<div class="entry-revision">
+      <div class="between">
+        <div class="entry-revision-title">Revision ${esc(rev.revision_no)}</div>
+        <span class="muted">${fmtShort(rev.created_at)}</span>
+      </div>
+      <div class="muted" style="font-size:12px;margin:2px 0 8px">
+        Edited by ${esc(rev.edited_by || 'Unknown')}${rev.edited_role ? ` (${esc(rev.edited_role)})` : ''} · previous update ${fmtShort(rev.previous_updated_at)}
+      </div>
+      <div class="hashline">previous fingerprint ${esc(rev.previous_hash || '')}</div>
+      <label class="fld">Previous text</label>
+      <textarea class="txt compact" readonly>${esc(rev.previous_text || '')}</textarea>
+    </div>`).join('')}
+  </div>`;
+}
+
+async function summariseExperimentEntries(e, ctx) {
+  const entryIds = (e.entries || []).map(en => en.id).filter(Boolean);
+  if (!entryIds.length) return toast('No notebook entries to summarise', true);
+  const res = await api.processEntries(entryIds, 'summary');
+  showExperimentSummaryModal(res, entryIds, e, ctx);
+}
+
+function showExperimentSummaryModal(res, entryIds, e, ctx) {
+  const access = experimentAccess(e);
+  const canSave = access.can_write && e.status !== 'locked' && res.experimentIds?.length === 1;
+  modal(`<div class="between">
+      <h3>Summary</h3>
+      <span class="pill">${esc(res.offline ? 'local-template' : res.model || 'AI')}</span>
+    </div>
+    <p class="muted" style="font-size:12px;margin-top:0">Generated from ${entryIds.length} notebook entr${entryIds.length === 1 ? 'y' : 'ies'} in this experiment.</p>
+    <label class="fld">Generated entry</label>
+    <textarea class="txt ai-output-edit" id="experimentSummaryText">${esc(res.output || '')}</textarea>
+    <div class="row" style="margin-top:16px;justify-content:flex-end">
+      <button class="btn ghost" data-x>Close</button>
+      <button class="btn sec" data-copy>Copy</button>
+      ${canSave ? '<button class="btn" data-save>Save as entry</button>' : ''}
+    </div>`);
+  const m = document.getElementById('modal');
+  m.querySelector('[data-x]').onclick = closeModal;
+  m.querySelector('[data-copy]').onclick = guard(async () => {
+    await navigator.clipboard.writeText(experimentGeneratedText(m));
+    toast('Copied');
+  });
+  const saveBtn = m.querySelector('[data-save]');
+  if (saveBtn) saveBtn.onclick = guard(async () => {
+    const text = experimentGeneratedText(m);
+    if (!text) return toast('Generated entry text is required', true);
+    await api.addEntry(e.id, {
+      type: 'note',
+      text,
+      sourceEntryIds: entryIds
+    });
+    closeModal();
+    toast('Summary saved as notebook entry');
+    ctx.go('experiments', { id: e.id });
+  });
+  autoGrowTextareas(m);
+}
+
+function experimentGeneratedText(modalEl) {
+  return modalEl.querySelector('#experimentSummaryText')?.value.trim() || '';
+}
+
+async function suggestExperimentSteps(e, ctx) {
+  const entryIds = (e.entries || []).map(en => en.id).filter(Boolean);
+  if (!entryIds.length) return toast('No notebook entries to suggest steps from', true);
+  const res = await api.processEntries(entryIds, 'action_plan');
+  showSuggestedStepsModal(res, entryIds, e, ctx);
+}
+
+function showSuggestedStepsModal(res, entryIds, e, ctx) {
+  const access = experimentAccess(e);
+  const steps = parseSuggestedSteps(res.output);
+  const canSave = access.can_write && e.status !== 'locked' && !e.archived_at
+    && res.experimentIds?.length === 1 && res.experimentIds[0] === e.id && steps.length;
+  modal(`<div class="between">
+      <h3>Suggested steps</h3>
+      <span class="pill">${esc(res.offline ? 'local-template' : res.model || 'AI')}</span>
+    </div>
+    <p class="muted" style="font-size:12px;margin-top:0">Generated from ${entryIds.length} notebook entr${entryIds.length === 1 ? 'y' : 'ies'} in this experiment.</p>
+    <div class="suggested-steps" data-suggested-steps>
+      ${steps.length ? steps.map((step, index) => `<label class="suggested-step">
+        <input type="checkbox" data-suggested-step="${index}" value="${esc(step)}" checked/>
+        <span>${esc(step)}</span>
+      </label>`).join('') : '<div class="muted" style="font-size:12px">No source-backed steps suggested.</div>'}
+    </div>
+    <div class="row" style="margin-top:16px;justify-content:flex-end">
+      <button class="btn ghost" data-x>Close</button>
+      ${steps.length ? '<button class="btn sec" data-copy-suggested-steps>Copy</button>' : ''}
+      ${canSave ? '<button class="btn" data-save-suggested-steps>Add selected</button>' : ''}
+    </div>`);
+  const m = document.getElementById('modal');
+  m.querySelector('[data-x]').onclick = closeModal;
+  const copyBtn = m.querySelector('[data-copy-suggested-steps]');
+  if (copyBtn) copyBtn.onclick = guard(async () => {
+    await navigator.clipboard.writeText(selectedSuggestedSteps(m).join('\n') || steps.join('\n'));
+    toast('Copied');
+  });
+  const saveBtn = m.querySelector('[data-save-suggested-steps]');
+  if (saveBtn) saveBtn.onclick = guard(async () => {
+    const selected = selectedSuggestedSteps(m);
+    if (!selected.length) return toast('Select at least one step', true);
+    for (const step of selected) await api.addExperimentStep(e.id, { text: step });
+    closeModal();
+    toast(`${selected.length} suggested step${selected.length === 1 ? '' : 's'} added`);
+    ctx.go('experiments', { id: e.id });
+  });
+}
+
+function parseSuggestedSteps(output) {
+  return Array.from(new Set(String(output || '')
+    .split(/\r?\n/)
+    .map(line => line
+      .replace(/^(?:Action\s*)?\d+[\).:-]\s*/i, '')
+      .replace(/^-+\s*/, '')
+      .trim())
+    .filter(line => line && !/No additional source-backed point/i.test(line))))
+    .slice(0, 8);
+}
+
+function selectedSuggestedSteps(modalEl) {
+  return Array.from(modalEl.querySelectorAll('[data-suggested-step]:checked'))
+    .map(input => input.value.trim())
+    .filter(Boolean);
+}
+
 function wireSignButtons(root, ctx, expId, access = experimentAccess({})) {
   root.querySelectorAll('[data-sign]').forEach(b => b.onclick = () => {
     const u = getUser();
@@ -1090,6 +1436,7 @@ async function editExperimentModal(ctx, e) {
     <label class="fld">Materials / reagents</label><textarea class="txt compact" id="mMaterials">${esc(e.materials || '')}</textarea>
     <label class="fld">Success criteria</label><textarea class="txt compact" id="mSuccessCriteria">${esc(e.success_criteria || '')}</textarea>
     <label class="fld">Safety notes</label><textarea class="txt compact" id="mSafetyNotes">${esc(e.safety_notes || '')}</textarea>
+    ${metadataFieldsHTML(e.metadata)}
     <label class="fld">Experiment outcome</label><select class="txt" id="mOutcomeStatus">
       ${outcomeStatusOptions(e.outcome_status)}
     </select>
@@ -1100,6 +1447,7 @@ async function editExperimentModal(ctx, e) {
       <button class="btn ghost" data-x>Cancel</button><button class="btn" data-ok>Save</button></div>`);
   const m = document.getElementById('modal');
   m.querySelector('[data-x]').onclick = closeModal;
+  wireMetadataEditor(m);
   m.querySelector('[data-ok]').onclick = guard(async () => {
     await api.updateExperiment(e.id, {
       title: m.querySelector('#mTitle').value.trim() || e.title,
@@ -1111,6 +1459,7 @@ async function editExperimentModal(ctx, e) {
       materials: m.querySelector('#mMaterials').value.trim(),
       success_criteria: m.querySelector('#mSuccessCriteria').value.trim(),
       safety_notes: m.querySelector('#mSafetyNotes').value.trim(),
+      metadata: readMetadataFields(m),
       outcome_status: m.querySelector('#mOutcomeStatus').value,
       outcome_summary: m.querySelector('#mOutcomeSummary').value.trim(),
       status: m.querySelector('#mStat').value
@@ -1124,7 +1473,7 @@ async function saveExperimentTemplateModal(ctx, e) {
     <p class="muted" style="font-size:12px;margin-top:0">Save this experiment setup as a reusable project template for future runs.</p>
     <label class="fld">Template name</label><input class="txt" id="templateName" value="${esc(e.title)} template"/>
     <label class="fld">Description</label><textarea class="txt compact" id="templateDescription" placeholder="When should this setup be reused?"></textarea>
-    <div class="hint" style="margin-top:10px">The template includes objective, hypothesis, protocol, materials, success criteria and safety notes.</div>
+    <div class="hint" style="margin-top:10px">The template includes objective, hypothesis, protocol, materials, success criteria, safety notes and custom metadata.</div>
     <div class="row" style="margin-top:16px;justify-content:flex-end">
       <button class="btn ghost" data-x>Cancel</button><button class="btn" data-save-template-confirm>Save template</button>
     </div>`);
@@ -1146,7 +1495,7 @@ async function saveExperimentTemplateModal(ctx, e) {
 
 async function duplicateExperimentModal(ctx, e) {
   modal(`<h3>Repeat setup</h3>
-    <p class="muted" style="font-size:12px;margin-top:0">Create a new active experiment with the same setup, tags, and procedure steps. Notebook observations, signatures, comments, attachments, and references stay with the original record.</p>
+    <p class="muted" style="font-size:12px;margin-top:0">Create a new active experiment with the same setup, tags, and procedure steps, including custom metadata. Notebook observations, signatures, comments, attachments, and references stay with the original record.</p>
     <label class="fld">New experiment title</label><input class="txt" id="duplicateTitle" value="${esc(e.title)} repeat"/>
     <div class="hint" style="margin-top:10px">The new run starts active with outcome set to Running and includes a related-experiment link back to this source.</div>
     <div class="row" style="margin-top:16px;justify-content:flex-end">
@@ -1171,33 +1520,43 @@ async function mountComposer(mount, ctx, expId) {
   let rawOcrUrl = null, cleanOcrUrl = null;
   let rawOcrText = '', correctedOcrText = '';
   let voiceTranscript = '', voiceTemplate = 'auto_lab_note', polishedReady = false, reviewMode = false;
+  let voiceBusy = false;
   let recordingStartedAt = 0, recordingTimer = null;
   let stt = { provider: 'webspeech', serverStt: false };
   try { stt = await api.sttHealth(); } catch {}
   let aiConfigured = false, aiModel = 'AI';
   try { const h = await api.aiHealth(); aiConfigured = !!h.configured; aiModel = h.model || 'AI'; } catch {}
   const serverStt = !!stt.serverStt;
-  const useLiveSpeech = voiceSupported;
-  const useRecorder = !useLiveSpeech && serverStt && recorderSupported;
-  const voiceMode = useLiveSpeech ? 'Live dictation'
-    : useRecorder ? `Server transcription · ${esc(stt.provider)}`
-      : 'Voice unavailable';
+  const liveSpeechAvailable = voiceSupported;
+  const recorderAvailable = serverStt && recorderSupported;
+  const audioUploadAvailable = serverStt;
+  const voiceModes = [
+    liveSpeechAvailable ? { value: 'live_dictation', label: 'Live dictation' } : null,
+    recorderAvailable ? { value: 'server_transcription', label: `Use server transcription · ${stt.provider}` } : null
+  ].filter(Boolean);
+  let selectedVoiceMode = chooseVoiceMode();
 
   mount.innerHTML = `
     <div class="composer">
       <div class="between" style="margin-bottom:8px"><b>Add entry</b>
-        <span class="pill">${voiceMode}</span></div>
+        <span class="pill" id="voiceModePill">${esc(voiceModeLabel(selectedVoiceMode))}</span></div>
       <div id="voiceCaptureWrap">
         <div class="toolbar">
+          ${voiceModes.length > 1 ? `<select class="txt voice-mode-select" id="voiceModeSelect" title="Choose voice capture mode">
+            ${voiceModes.map(mode => `<option value="${esc(mode.value)}" ${mode.value === selectedVoiceMode ? 'selected' : ''}>${esc(mode.label)}</option>`).join('')}
+          </select>` : ''}
           <button class="btn sm mic" id="micStart" type="button">🎙 Start voice</button>
           <button class="btn sm warn" id="micPause" type="button" style="display:none">⏸ Pause</button>
           <button class="btn sm danger" id="micStop" type="button" style="display:none">⏹ Stop</button>
           <button class="btn ghost sm" id="voiceSourceBtn" type="button" data-voice-source disabled>Source transcript</button>
           <button class="btn sm sec" id="voiceDraftReport" type="button">Draft report</button>
+          <button class="btn sm sec" id="voiceCleanNote" type="button">Clean up</button>
+          ${audioUploadAvailable ? '<button class="btn sm sec" id="voiceUploadAudio" type="button">Upload audio</button>' : ''}
           <button class="btn sm sec" id="ocrCam" type="button">📸 Camera</button>
           <button class="btn sm sec" id="ocrBtn" type="button">🖼 Upload scan</button>
           <button class="btn sm sec" id="sketchBtn" type="button">Sketch figure</button>
           <input type="file" id="ocrFile" accept="image/*" style="display:none"/>
+          ${audioUploadAvailable ? '<input type="file" id="voiceAudioFile" accept="audio/*" style="display:none"/>' : ''}
         </div>
         <label class="fld">Raw lab notes</label>
         <textarea class="txt" id="voiceManualNotes" placeholder="Jot observations, sample IDs, headings, or shorthand while dictation runs in the background."></textarea>
@@ -1218,6 +1577,7 @@ async function mountComposer(mount, ctx, expId) {
         <label class="fld">Format</label>
         <select class="txt" id="voiceTemplate">
           <option value="lab_report">Lab report</option>
+          <option value="clean_voice_note">Clean note</option>
           <option value="auto_lab_note">Auto lab note</option>
           <option value="numbered_observations">Numbered observations</option>
           <option value="concise_paragraph">Concise paragraph</option>
@@ -1237,7 +1597,7 @@ async function mountComposer(mount, ctx, expId) {
             <b>OCR review</b>
             <div class="muted" style="font-size:12px">Correct the extracted text before saving it to the experiment.</div>
           </div>
-          <span class="pill">Review scan</span>
+          <span class="pill" id="ocrConfidencePill">Review scan</span>
         </div>
         <label class="fld">Corrected OCR text</label>
         <textarea class="txt" id="ocrCorrectedText" placeholder="Correct the OCR output here before saving."></textarea>
@@ -1248,6 +1608,7 @@ async function mountComposer(mount, ctx, expId) {
       </div>
       <div class="row" style="margin-top:10px">
         <button class="btn" id="saveEntry" type="button" disabled>Save entry</button>
+        <button class="btn sec sm" id="entryDraftCheck" type="button" disabled>Check draft</button>
         <button class="btn ghost sm" id="clearEntry" type="button">Clear</button>
         <span class="muted" id="composerState" style="font-size:12px"></span>
       </div>
@@ -1263,12 +1624,22 @@ async function mountComposer(mount, ctx, expId) {
   const regenerateBtn = mount.querySelector('#voiceRegenerate');
   const backToCaptureBtn = mount.querySelector('#voiceBackToCapture');
   const voiceDraftReportBtn = mount.querySelector('#voiceDraftReport');
+  const voiceCleanNoteBtn = mount.querySelector('#voiceCleanNote');
+  const voiceUploadAudioBtn = mount.querySelector('#voiceUploadAudio');
+  const voiceAudioFile = mount.querySelector('#voiceAudioFile');
   const ocrReviewWrap = mount.querySelector('#ocrReviewWrap');
   const ocrCorrectedEl = mount.querySelector('#ocrCorrectedText');
   const ocrRawEl = mount.querySelector('#ocrRawText');
   const saveBtn = mount.querySelector('#saveEntry');
+  const checkDraftBtn = mount.querySelector('#entryDraftCheck');
   const stateEl = mount.querySelector('#composerState');
-  const upd = () => { saveBtn.disabled = !currentSaveText().trim(); };
+  const voiceModePill = mount.querySelector('#voiceModePill');
+  const voiceModeSelect = mount.querySelector('#voiceModeSelect');
+  const upd = () => {
+    const hasText = !!currentSaveText().trim();
+    saveBtn.disabled = voiceBusy || !hasText;
+    checkDraftBtn.disabled = voiceBusy || !hasText;
+  };
   text.addEventListener('input', () => { upd(); syncVoiceSourceButtons(); if (!capturedType) capturedType = 'note'; });
   polishedEl.addEventListener('input', () => { polishedReady = !!polishedEl.value.trim(); upd(); });
   ocrCorrectedEl.addEventListener('input', () => { correctedOcrText = ocrCorrectedEl.value; upd(); });
@@ -1280,17 +1651,34 @@ async function mountComposer(mount, ctx, expId) {
     voiceTemplate = 'lab_report';
     await enhanceVoiceDraft();
   });
+  voiceCleanNoteBtn.onclick = guard(async () => {
+    voiceTemplate = 'clean_voice_note';
+    await enhanceVoiceDraft();
+  });
   regenerateBtn.onclick = guard(enhanceVoiceDraft);
   backToCaptureBtn.onclick = () => {
     reviewMode = false;
     captureWrap.hidden = false;
     reviewWrap.hidden = true;
     stateEl.textContent = voiceTranscript.trim() ? 'Voice captured — raw notes and transcript preserved' : '';
+    autoGrowTextareas(captureWrap);
     upd();
   };
   mount.querySelectorAll('[data-voice-source]').forEach(btn => btn.onclick = () => {
     openVoiceSourceModal(text.value, voiceTranscript, voiceTemplate);
   });
+  if (voiceModeSelect) voiceModeSelect.onchange = () => {
+    selectedVoiceMode = voiceModeSelect.value;
+    wireSelectedVoiceMode();
+  };
+  if (voiceUploadAudioBtn && voiceAudioFile) {
+    voiceUploadAudioBtn.onclick = () => voiceAudioFile.click();
+    voiceAudioFile.onchange = guard(async ev => {
+      const file = ev.target.files?.[0];
+      ev.target.value = '';
+      if (file) await processServerAudio(file, { fromUpload: true });
+    });
+  }
 
   const micStart = mount.querySelector('#micStart');
   const micPause = mount.querySelector('#micPause');
@@ -1310,21 +1698,31 @@ async function mountComposer(mount, ctx, expId) {
   function setVoiceTranscript(value) {
     voiceTranscript = String(value || '').trimStart();
     transcriptEl.value = voiceTranscript;
+    autoGrowTextareas(transcriptEl);
     paintRecordingMeta(reclabel.classList.contains('paused') ? 'Paused' : reclabel.classList.contains('on') ? 'Recording' : '');
     syncVoiceSourceButtons();
     upd();
   }
-  async function afterVoiceStop() {
+  async function afterVoiceStop({ manageDraftBusy = true } = {}) {
     capturedType = 'voice';
     stopRecordingTimer();
-    if (!voiceTranscript.trim()) { stateEl.textContent = 'No speech detected'; syncVoiceSourceButtons(); upd(); return; }
-    if (aiConfigured) await enhanceVoiceDraft();
+    if (!voiceTranscript.trim()) {
+      stateEl.textContent = recorderAvailable && !useRecorder()
+        ? 'No speech detected — try server transcription'
+        : 'No speech detected';
+      syncVoiceSourceButtons(); upd(); return;
+    }
+    if (aiConfigured) await enhanceVoiceDraft({ manageBusy: manageDraftBusy });
     else { reviewWrap.hidden = true; captureWrap.hidden = false; stateEl.textContent = 'Voice captured — review & save raw transcript'; upd(); }
   }
-  async function enhanceVoiceDraft() {
+  async function enhanceVoiceDraft({ manageBusy = true } = {}) {
     const transcript = voiceTranscript.trim();
     const rawNotes = text.value.trim();
     if (!transcript && !rawNotes) return;
+    if (manageBusy) {
+      voiceBusy = true;
+      upd();
+    }
     reviewMode = true;
     captureWrap.hidden = true;
     reviewWrap.hidden = false;
@@ -1335,6 +1733,7 @@ async function mountComposer(mount, ctx, expId) {
     try {
       const res = await api.processVoiceDraft(expId, transcript, rawNotes, voiceTemplate);
       polishedEl.value = res.output || '';
+      autoGrowTextareas(reviewWrap);
       polishedReady = !!polishedEl.value.trim();
       stateEl.textContent = polishedReady
         ? (res.offline ? 'Local draft ready — review & save' : 'Enhanced draft ready — review & save')
@@ -1342,6 +1741,7 @@ async function mountComposer(mount, ctx, expId) {
     } finally {
       polishedEl.disabled = false;
       regenerateBtn.disabled = false;
+      if (manageBusy) voiceBusy = false;
       upd();
     }
   }
@@ -1359,10 +1759,16 @@ async function mountComposer(mount, ctx, expId) {
     const hasSource = !!(voiceTranscript.trim() || text.value.trim());
     mount.querySelectorAll('[data-voice-source]').forEach(btn => { btn.disabled = !hasSource; });
     voiceDraftReportBtn.disabled = !hasSource;
+    voiceCleanNoteBtn.disabled = !hasSource;
     voiceDraftReportBtn.title = hasSource
       ? (aiConfigured
         ? 'Draft a structured lab report from the current raw notes or transcript'
         : 'Draft a local structured lab report from the current raw notes or transcript')
+      : 'Add raw notes or capture speech first';
+    voiceCleanNoteBtn.title = hasSource
+      ? (aiConfigured
+        ? 'Clean punctuation, capitalization and paragraphs from the current raw notes or transcript'
+        : 'Locally clean punctuation, capitalization and paragraphs from the current raw notes or transcript')
       : 'Add raw notes or capture speech first';
   }
   function startRecordingTimer() {
@@ -1382,20 +1788,60 @@ async function mountComposer(mount, ctx, expId) {
   function resetEnhancedDraft() {
     polishedReady = false;
     polishedEl.value = '';
+    autoGrowTextareas(reviewWrap);
     reviewMode = false;
     reviewWrap.hidden = true;
     captureWrap.hidden = false;
   }
 
-  if (useLiveSpeech) wireWebSpeech();
-  else if (useRecorder) wireRecorder();
-  else wireVoiceUnavailable();
+  function chooseVoiceMode() {
+    if (liveSpeechAvailable) return 'live_dictation';
+    if (recorderAvailable) return 'server_transcription';
+    return 'unavailable';
+  }
+
+  function voiceModeLabel(mode) {
+    if (mode === 'live_dictation') return 'Live dictation';
+    if (mode === 'server_transcription') return `Server transcription · ${stt.provider}`;
+    return 'Voice unavailable';
+  }
+
+  function useLiveSpeech(mode = selectedVoiceMode) {
+    return mode === 'live_dictation' && liveSpeechAvailable;
+  }
+
+  function useRecorder(mode = selectedVoiceMode) {
+    return mode === 'server_transcription' && recorderAvailable;
+  }
+
+  function wireSelectedVoiceMode() {
+    if (mount._voice && mount._voice.state !== 'idle') mount._voice.stop();
+    if (mount._rec && mount._rec.state !== 'idle') mount._rec.stop();
+    mount._voice = null;
+    mount._rec = null;
+    showIdle();
+    micStart.disabled = false;
+    micStart.textContent = '🎙 Start voice';
+    micStart.title = '';
+    stateEl.textContent = '';
+    if (voiceModePill) voiceModePill.textContent = voiceModeLabel(selectedVoiceMode);
+    if (useLiveSpeech()) wireWebSpeech();
+    else if (useRecorder()) wireRecorder();
+    else wireVoiceUnavailable();
+  }
+
+  wireSelectedVoiceMode();
 
   function wireWebSpeech() {
     const voice = new VoiceController({
       onText: t => { setVoiceTranscript(t); },
       onState: s => {
-        if (s.startsWith('error')) { stateEl.textContent = 'Mic blocked — check permissions'; showIdle(); return; }
+        if (s.startsWith('error')) {
+          stateEl.textContent = recorderAvailable
+            ? 'Mic blocked — use server transcription'
+            : 'Mic blocked — check permissions';
+          showIdle(); return;
+        }
         capturedType = 'voice';
         if (s === 'recording') { showRecording(); stateEl.textContent = 'Listening… speak now'; }
         else if (s === 'paused') { showPaused(); stateEl.textContent = 'Paused — Resume or Stop'; }
@@ -1411,8 +1857,8 @@ async function mountComposer(mount, ctx, expId) {
     micStart.disabled = true;
     micStart.textContent = '🎙 Voice unavailable';
     if (serverStt && !recorderSupported) {
-      micStart.title = 'This browser cannot access microphone recording here. Use HTTPS or localhost and allow microphone access.';
-      stateEl.textContent = 'Voice needs a secure browser context with microphone recording.';
+      micStart.title = 'This browser cannot access microphone recording here. Upload an audio file or use HTTPS/localhost with microphone access.';
+      stateEl.textContent = 'Voice needs microphone access here, or upload an existing audio recording.';
     } else {
       micStart.title = 'This browser does not support live dictation. Set STT_PROVIDER=auto with OPENAI_API_KEY, or STT_PROVIDER=whisper, to enable server recording.';
       stateEl.textContent = 'Voice on this device needs server transcription.';
@@ -1429,9 +1875,48 @@ async function mountComposer(mount, ctx, expId) {
     micStop.onclick = guard(async () => {
       showIdle(); stateEl.textContent = 'Transcribing…';
       const blob = await rec.stop(); if (!blob) { stateEl.textContent = ''; return; }
-      try { const { text: tx } = await api.transcribe(blob); setVoiceTranscript([voiceTranscript, tx || ''].filter(Boolean).join(' ')); stateEl.textContent = tx ? 'Transcribed' : 'No speech detected'; if (tx) await afterVoiceStop(); }
-      catch (err) { stateEl.textContent = 'Transcription failed: ' + err.message; }
+      await processServerAudio(blob);
     });
+  }
+
+  async function processServerAudio(file, { fromUpload = false } = {}) {
+    capturedType = 'voice';
+    resetEnhancedDraft();
+    voiceBusy = true;
+    upd();
+    stateEl.textContent = fromUpload ? 'Transcribing uploaded audio…' : 'Transcribing…';
+    if (voiceUploadAudioBtn) voiceUploadAudioBtn.disabled = true;
+    let tx = '';
+    try {
+      try {
+        ({ text: tx = '' } = await api.transcribe(file));
+      } catch (err) {
+        stateEl.textContent = 'Transcription failed: ' + err.message;
+        return;
+      }
+      setVoiceTranscript([voiceTranscript, tx || ''].filter(Boolean).join(' '));
+      stateEl.textContent = tx
+        ? (fromUpload ? 'Transcribed uploaded audio' : 'Transcribed')
+        : (fromUpload ? 'No speech detected in uploaded audio' : 'No speech detected');
+      if (!tx) return;
+      if (fromUpload) voiceTemplate = 'lab_report';
+      try {
+        await afterVoiceStop({ manageDraftBusy: false });
+        if (fromUpload && !aiConfigured) await enhanceVoiceDraft({ manageBusy: false });
+      } catch (err) {
+        stateEl.textContent = 'Transcribed — draft failed: ' + err.message;
+        syncVoiceSourceButtons();
+        upd();
+      }
+    } catch (err) {
+      stateEl.textContent = 'Transcribed — draft failed: ' + err.message;
+      syncVoiceSourceButtons();
+      upd();
+    } finally {
+      voiceBusy = false;
+      if (voiceUploadAudioBtn) voiceUploadAudioBtn.disabled = false;
+      upd();
+    }
   }
 
   /* ---- OCR: shared processing for uploaded file or camera capture ---- */
@@ -1448,19 +1933,40 @@ async function mountComposer(mount, ctx, expId) {
       const out = await runOCR(dataURL, p => { const s = mount.querySelector('#ocrStatus'); if (s) s.textContent = 'Reading… ' + p + '%'; });
       const extracted = typeof out === 'string' ? out : (out.text || '');
       const processedDataUrl = typeof out === 'string' ? null : out.processedDataUrl;
+      const confidence = typeof out === 'string' ? null : out.confidence;
+      const needsReview = typeof out !== 'string' && out.needsReview;
       rawOcrText = extracted;
       correctedOcrText = extracted;
       ocrCorrectedEl.value = extracted;
       ocrRawEl.value = extracted || '(no text detected)';
       ocrReviewWrap.hidden = false;
+      autoGrowTextareas(ocrReviewWrap);
+      const confidenceText = confidence == null ? '' : ` · confidence ${confidence}%`;
+      const confidencePill = mount.querySelector('#ocrConfidencePill');
+      if (confidencePill) {
+        confidencePill.textContent = extracted
+          ? (needsReview ? `Needs careful review${confidenceText}` : `OCR ready${confidenceText}`)
+          : 'No text detected';
+        confidencePill.title = needsReview
+          ? 'Low-confidence OCR: correct the extracted text against the original scan before saving.'
+          : 'OCR confidence is acceptable, but the text should still be reviewed before saving.';
+      }
       if (processedDataUrl) mount.querySelector('#ocrPreview').innerHTML = `${ocrEvidencePreview(dataURL, processedDataUrl)}<div class="muted" style="font-size:12px;margin-top:6px" id="ocrStatus"></div>`;
       try { rawOcrUrl = (await api.uploadImage(fileForUpload, fileForUpload?.name || 'raw-ocr-scan.png', 'ocr-raw', expId)).url; } catch { rawOcrUrl = null; }
       try {
         if (processedDataUrl) cleanOcrUrl = (await api.uploadImage(dataURLtoBlob(processedDataUrl), 'processed-ocr-scan.png', 'ocr-clean', expId)).url;
       } catch { cleanOcrUrl = null; }
       uploadedUrl = cleanOcrUrl || rawOcrUrl;
-      const s = mount.querySelector('#ocrStatus'); if (s) s.textContent = extracted ? '✓ Text extracted — correct & save' : 'No text detected — try again';
-      stateEl.textContent = cleanOcrUrl || rawOcrUrl ? 'OCR complete · image evidence stored' : 'OCR complete · text only'; upd();
+      const s = mount.querySelector('#ocrStatus');
+      if (s) {
+        s.textContent = extracted
+          ? (needsReview ? `Low-confidence OCR${confidenceText} — correct against the scan before saving` : `✓ Text extracted${confidenceText} — correct & save`)
+          : 'No text detected — try again';
+      }
+      stateEl.textContent = needsReview
+        ? 'OCR complete · low-confidence text needs correction'
+        : cleanOcrUrl || rawOcrUrl ? 'OCR complete · image evidence stored' : 'OCR complete · text only';
+      upd();
     } catch (err) { const s = mount.querySelector('#ocrStatus'); if (s) s.textContent = 'OCR failed: ' + err.message; }
   }
 
@@ -1477,12 +1983,14 @@ async function mountComposer(mount, ctx, expId) {
   mount.querySelector('#sketchBtn').onclick = () => openSketchFigureModal({ id: expId }, () => ctx.go('experiments', { id: expId }));
 
   /* ---- Save / clear ---- */
+  checkDraftBtn.onclick = guard(checkEntryDraft);
   mount.querySelector('#clearEntry').onclick = () => {
     text.value = ''; capturedType = null; uploadedUrl = null; rawOcrUrl = null; cleanOcrUrl = null; rawOcrText = ''; correctedOcrText = ''; recordingStartedAt = 0; resetEnhancedDraft(); setVoiceTranscript('');
     ocrCorrectedEl.value = '';
     ocrRawEl.value = '';
     ocrReviewWrap.hidden = true;
     mount.querySelector('#ocrPreview').innerHTML = ''; stateEl.textContent = ''; upd();
+    autoGrowTextareas(mount);
     if (mount._voice && mount._voice.state !== 'idle') mount._voice.stop();
     if (mount._rec && mount._rec.state !== 'idle') mount._rec.stop();
     showIdle();
@@ -1518,6 +2026,50 @@ async function mountComposer(mount, ctx, expId) {
     toast('Entry saved & time-stamped'); ctx.go('experiments', { id: expId });
   });
   syncVoiceSourceButtons();
+
+  async function checkEntryDraft() {
+    const val = currentSaveText().trim();
+    if (!val) return toast('Draft text required', true);
+    checkDraftBtn.disabled = true;
+    stateEl.textContent = 'Checking draft…';
+    try {
+      const res = await api.checkEntryDraft(expId, currentSaveText());
+      showEntryDraftCheckModal(res);
+      stateEl.textContent = res.status === 'ready' ? 'Draft check passed' : 'Draft check found missing details';
+    } finally {
+      upd();
+    }
+  }
+}
+
+function showEntryDraftCheckModal(res) {
+  const ready = res.status === 'ready';
+  const score = Number.isFinite(Number(res.score)) ? Number(res.score) : 0;
+  modal(`<div class="between">
+      <h3>Draft check</h3>
+      <span class="pill ${ready ? '' : 'warn'}">${esc(ready ? 'Ready' : 'Needs details')} · ${score}/100</span>
+    </div>
+    <p class="muted" style="font-size:12px;margin-top:0">Review suggested completeness checks before saving this notebook entry.</p>
+    <div class="entry-draft-check">
+      ${(res.findings || []).map(finding => entryDraftFindingHTML(finding)).join('')}
+    </div>
+    ${(res.suggestions || []).length ? `<div class="hint" style="margin-top:12px">${esc((res.suggestions || []).slice(0, 3).join(' '))}</div>` : ''}
+    <div class="row" style="margin-top:16px;justify-content:flex-end">
+      <button class="btn" data-x>Close</button>
+    </div>`);
+  const m = document.getElementById('modal');
+  m.querySelector('[data-x]').onclick = closeModal;
+}
+
+function entryDraftFindingHTML(finding) {
+  const present = finding.status === 'present';
+  return `<div class="entry-draft-finding ${present ? 'present' : 'missing'}" data-entry-draft-finding="${esc(finding.key || '')}">
+    <span class="entry-draft-finding-icon">${present ? '✓' : '!'}</span>
+    <span>
+      <b>${esc(finding.label || 'Draft detail')}</b>
+      <span>${esc(finding.detail || '')}</span>
+    </span>
+  </div>`;
 }
 
 function buildVoiceSourceText(manualNotes, transcript) {
@@ -1576,6 +2128,8 @@ function openVoiceSourceModal(manualNotes, transcript, template = 'auto_lab_note
 
 function templateLabel(template) {
   return {
+    lab_report: 'Lab report',
+    clean_voice_note: 'Clean note',
     auto_lab_note: 'Auto lab note',
     numbered_observations: 'Numbered observations',
     concise_paragraph: 'Concise paragraph'

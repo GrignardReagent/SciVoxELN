@@ -20,8 +20,11 @@ export function toast(msg, isErr = false) {
 }
 
 const autoGrowRegistry = new WeakSet();
+const autoGrowWidths = new WeakMap();
 let autoGrowObserver = null;
 let autoGrowResizeInstalled = false;
+let autoGrowValuePatchInstalled = false;
+let autoGrowTextareaResizeObserver = null;
 
 export function autoGrowTextareas(root = document) {
   const found = [];
@@ -31,6 +34,7 @@ export function autoGrowTextareas(root = document) {
 }
 
 export function installTextareaAutoGrow(root = document.body) {
+  installTextareaValueAutoGrow();
   autoGrowTextareas(root);
   if (!autoGrowResizeInstalled) {
     window.addEventListener('resize', () => autoGrowTextareas(root));
@@ -39,12 +43,21 @@ export function installTextareaAutoGrow(root = document.body) {
   if (autoGrowObserver || typeof MutationObserver === 'undefined') return;
   autoGrowObserver = new MutationObserver(records => {
     records.forEach(record => {
+      if (record.type === 'attributes') {
+        autoGrowTextareas(record.target);
+        return;
+      }
       record.addedNodes.forEach(node => {
         if (node.nodeType === 1) autoGrowTextareas(node);
       });
     });
   });
-  autoGrowObserver.observe(root, { childList: true, subtree: true });
+  autoGrowObserver.observe(root, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ['hidden', 'style', 'class']
+  });
 }
 
 function prepareAutoGrowTextarea(el) {
@@ -56,11 +69,56 @@ function prepareAutoGrowTextarea(el) {
   el.dataset.autogrow = 'true';
   el.style.overflowY = 'hidden';
   el.addEventListener('input', () => growTextarea(el));
-  el.addEventListener('change', () => growTextarea(el));
+  el.addEventListener('change', () => scheduleGrowTextarea(el));
+  el.addEventListener('focus', () => scheduleGrowTextarea(el));
+  observeTextareaResize(el);
   growTextarea(el);
 }
 
+function installTextareaValueAutoGrow() {
+  if (autoGrowValuePatchInstalled || typeof HTMLTextAreaElement === 'undefined') return;
+  const valueDescriptor = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value');
+  if (!valueDescriptor?.get || !valueDescriptor?.set || !valueDescriptor.configurable) return;
+  Object.defineProperty(HTMLTextAreaElement.prototype, 'value', {
+    configurable: valueDescriptor.configurable,
+    enumerable: valueDescriptor.enumerable,
+    get: valueDescriptor.get,
+    set(value) {
+      valueDescriptor.set.call(this, value);
+      if (this.dataset?.autogrow === 'true') scheduleGrowTextarea(this);
+    }
+  });
+  autoGrowValuePatchInstalled = true;
+}
+
+function observeTextareaResize(el) {
+  if (typeof ResizeObserver === 'undefined') return;
+  if (!autoGrowTextareaResizeObserver) {
+    autoGrowTextareaResizeObserver = new ResizeObserver(entries => {
+      entries.forEach(entry => {
+        const width = Math.round(entry.contentRect.width || 0);
+        if (!width || autoGrowWidths.get(entry.target) === width) return;
+        autoGrowWidths.set(entry.target, width);
+        scheduleGrowTextarea(entry.target);
+      });
+    });
+  }
+  autoGrowTextareaResizeObserver.observe(el);
+}
+
+function scheduleGrowTextarea(el) {
+  if (el.dataset.autogrowQueued === 'true') return;
+  el.dataset.autogrowQueued = 'true';
+  const run = () => {
+    delete el.dataset.autogrowQueued;
+    growTextarea(el);
+  };
+  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run);
+  else queueMicrotask(run);
+}
+
 function growTextarea(el) {
+  if (el.clientWidth === 0 && el.scrollHeight === 0) return;
   el.style.height = 'auto';
   const border = el.offsetHeight - el.clientHeight;
   el.style.height = `${el.scrollHeight + border}px`;

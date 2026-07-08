@@ -1,5 +1,5 @@
 import { api } from './api.js';
-import { esc, guard, modal, closeModal, toast } from './ui.js';
+import { esc, guard, modal, closeModal, toast, autoGrowTextareas } from './ui.js';
 import { VoiceController, voiceSupported } from './voice.js';
 import { cameraSupported, startCamera, stopCamera } from './ocr.js';
 
@@ -131,6 +131,7 @@ export function openObserverMode(exp, ctx) {
         onText: t => {
           transcript = t;
           transcriptEl.value = t;
+          autoGrowTextareas(transcriptEl);
           transcriptEl.scrollTop = transcriptEl.scrollHeight;
         },
         onState: s => {
@@ -238,6 +239,7 @@ export function openObserverMode(exp, ctx) {
       if (!reviewedText) return toast('Entry text required', true);
       await saveConfirmed(reviewedText);
     });
+    autoGrowTextareas(shell);
     setTimeout(() => shell.querySelector('#obsReviewText')?.focus(), 30);
   }
 

@@ -13,18 +13,18 @@ import { Router } from 'express';
 import { Entries, ExperimentAttachments, ExperimentLinks, ExperimentSteps, Experiments, Audit, Projects, isHiddenEntryType } from '../db.js';
 
 const r = Router();
-const MODEL = process.env.OPENAI_MODEL || 'gpt-5.5';
-const VISION_MODEL = process.env.OPENAI_VISION_MODEL || MODEL;
-const BASE = (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '');
-const API_URL = `${BASE}/chat/completions`;
 const configured = () => !!process.env.OPENAI_API_KEY;
-const VOICE_TEMPLATES = new Set(['lab_report', 'auto_lab_note', 'numbered_observations', 'concise_paragraph']);
+const openAIModel = () => process.env.OPENAI_MODEL || 'gpt-5.5';
+const visionModel = () => process.env.OPENAI_VISION_MODEL || openAIModel();
+const openAIBase = () => (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '');
+const chatCompletionsUrl = () => `${openAIBase()}/chat/completions`;
+const VOICE_TEMPLATES = new Set(['lab_report', 'clean_voice_note', 'auto_lab_note', 'numbered_observations', 'concise_paragraph']);
 const LEGACY_STYLE_TO_TEMPLATE = {
   numbered_bullets: 'numbered_observations',
   concise_paragraph: 'concise_paragraph'
 };
 
-r.get('/health', (_req, res) => res.json({ configured: configured(), model: MODEL, visionModel: VISION_MODEL }));
+r.get('/health', (_req, res) => res.json({ configured: configured(), model: openAIModel(), visionModel: visionModel() }));
 
 r.post('/process-voice-draft', async (req, res) => {
   const experimentId = String(req.body?.experimentId || '');
@@ -37,7 +37,7 @@ r.post('/process-voice-draft', async (req, res) => {
       : '';
   const requestedTemplate = String(req.body?.template || '').trim();
   if (requestedTemplate && !VOICE_TEMPLATES.has(requestedTemplate)) {
-    return res.status(400).json({ error: 'template must be lab_report, auto_lab_note, numbered_observations, or concise_paragraph' });
+    return res.status(400).json({ error: 'template must be lab_report, clean_voice_note, auto_lab_note, numbered_observations, or concise_paragraph' });
   }
   const template = VOICE_TEMPLATES.has(requestedTemplate)
     ? requestedTemplate
@@ -51,6 +51,7 @@ r.post('/process-voice-draft', async (req, res) => {
   const exp = Experiments.get(experimentId, req.user);
   if (!exp) return res.status(404).json({ error: 'Experiment not found' });
   if (!Projects.canAccessProject(req.user, exp.project_id, 'scientist')) return res.status(403).json({ error: 'Project write access required' });
+  if (exp.archived_at) return res.status(409).json({ error: 'Experiment is archived (read-only). Restore it before editing.' });
   if (exp.status === 'locked') return res.status(409).json({ error: 'Experiment is locked (read-only)' });
 
   if (!configured()) {
@@ -86,25 +87,45 @@ r.post('/process-voice-draft', async (req, res) => {
   };
 
   try {
-    const resp = await fetch(API_URL, {
+    const model = openAIModel();
+    const resp = await fetch(chatCompletionsUrl(), {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
-      body: JSON.stringify({ model: MODEL, messages: [system, user], max_completion_tokens: 520 })
+      body: JSON.stringify({ model, messages: [system, user], max_completion_tokens: 520 })
     });
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok) {
       const msg = data?.error?.message || `OpenAI error ${resp.status}`;
-      return res.status(502).json({ error: msg });
+      return localVoiceDraftFallback(req, res, { transcript, rawNotes, template, exp, responseStyle, reason: msg });
     }
     const rawOutput = data?.choices?.[0]?.message?.content?.trim() || '';
     const output = normalizeVoiceDraftOutput(rawOutput, template);
     Audit.log(req.user.name, req.user.role, 'AI_POLISH_VOICE_DRAFT',
-      `${responseStyle} for "${exp.title}" | template ${template} | transcript words ${countWords(transcript)} | raw note words ${countWords(rawNotes)} | model ${MODEL}`,
+      `${responseStyle} for "${exp.title}" | template ${template} | transcript words ${countWords(transcript)} | raw note words ${countWords(rawNotes)} | model ${model}`,
       { projectId: exp.project_id });
-    res.json({ style: responseStyle, template, output, model: MODEL, experimentId: exp.id });
+    res.json({ style: responseStyle, template, output, model, experimentId: exp.id });
   } catch (e) {
-    res.status(502).json({ error: 'AI request failed: ' + e.message });
+    return localVoiceDraftFallback(req, res, { transcript, rawNotes, template, exp, responseStyle, reason: 'AI request failed: ' + e.message });
   }
+});
+
+r.post('/check-entry-draft', async (req, res) => {
+  const experimentId = String(req.body?.experimentId || '');
+  const text = compactSpaces(req.body?.text || '').slice(0, 12000);
+  if (!experimentId) return res.status(400).json({ error: 'experimentId required' });
+  if (!text) return res.status(400).json({ error: 'text required' });
+
+  const exp = Experiments.get(experimentId, req.user);
+  if (!exp) return res.status(404).json({ error: 'Experiment not found' });
+  if (!Projects.canAccessProject(req.user, exp.project_id, 'scientist')) return res.status(403).json({ error: 'Project write access required' });
+  if (exp.archived_at) return res.status(409).json({ error: 'Experiment is archived (read-only). Restore it before editing.' });
+  if (exp.status === 'locked') return res.status(409).json({ error: 'Experiment is locked (read-only)' });
+
+  const result = localEntryDraftCheck(text);
+  Audit.log(req.user.name, req.user.role, 'LOCAL_CHECK_ENTRY_DRAFT',
+    `draft check for "${exp.title}" | score ${result.score} | status ${result.status} | words ${countWords(text)}`,
+    { projectId: exp.project_id });
+  res.json({ ...result, model: 'local-rules', experimentId: exp.id, offline: true });
 });
 
 r.post('/chat', async (req, res) => {
@@ -137,6 +158,7 @@ r.post('/chat', async (req, res) => {
       `Materials / reagents: ${exp.materials || '—'}`,
       `Success criteria: ${exp.success_criteria || '—'}`,
       `Safety notes: ${exp.safety_notes || '—'}`,
+      `Custom metadata: ${formatExperimentMetadata(exp.metadata) || '—'}`,
       `Outcome: ${outcomeStatusLabel(exp.outcome_status)}`,
       `Outcome note: ${exp.outcome_summary || '—'}`,
       `Related experiments:\n${links || '(none)'}`,
@@ -163,10 +185,11 @@ r.post('/chat', async (req, res) => {
     .map(m => ({ role: m.role, content: m.content.slice(0, 8000) }));
 
   try {
-    const resp = await fetch(API_URL, {
+    const model = openAIModel();
+    const resp = await fetch(chatCompletionsUrl(), {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
-      body: JSON.stringify({ model: MODEL, messages: [system, ...history] })
+      body: JSON.stringify({ model, messages: [system, ...history] })
     });
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok) {
@@ -175,15 +198,13 @@ r.post('/chat', async (req, res) => {
     }
     const reply = data?.choices?.[0]?.message?.content?.trim() || '(no response)';
     Audit.log(req.user.name, req.user.role, 'AI_CHAT', exp ? `"${exp.title}"` : 'general', { projectId: exp?.project_id });
-    res.json({ reply, model: MODEL });
+    res.json({ reply, model });
   } catch (e) {
     res.status(502).json({ error: 'AI request failed: ' + e.message });
   }
 });
 
 r.post('/process-entries', async (req, res) => {
-  if (!configured()) return res.status(501).json({ error: 'AI assistant is not configured (set OPENAI_API_KEY).' });
-
   const ids = Array.from(new Set((req.body?.entryIds || []).map(String).filter(Boolean)));
   const mode = req.body?.mode === 'action_plan' ? 'action_plan' : 'summary';
   if (!ids.length) return res.status(400).json({ error: 'entryIds[] required' });
@@ -239,16 +260,35 @@ r.post('/process-entries', async (req, res) => {
     ].join('\n')
   };
 
+  if (!configured()) {
+    return localProcessedEntriesFallback(req, res, {
+      entries,
+      mode,
+      projectIds,
+      summaryWordLimit,
+      reason: 'AI assistant is not configured',
+      fallback: false
+    });
+  }
+
   try {
-    const resp = await fetch(API_URL, {
+    const model = openAIModel();
+    const resp = await fetch(chatCompletionsUrl(), {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
-      body: JSON.stringify({ model: MODEL, messages: [system, user] })
+      body: JSON.stringify({ model, messages: [system, user] })
     });
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok) {
       const msg = data?.error?.message || `OpenAI error ${resp.status}`;
-      return res.status(502).json({ error: msg });
+      return localProcessedEntriesFallback(req, res, {
+        entries,
+        mode,
+        projectIds,
+        summaryWordLimit,
+        reason: msg,
+        fallback: true
+      });
     }
     const rawOutput = data?.choices?.[0]?.message?.content?.trim() || '(no response)';
     const output = normalizeProcessedOutput(rawOutput, mode, { summaryWordLimit });
@@ -257,13 +297,20 @@ r.post('/process-entries', async (req, res) => {
     res.json({
       mode,
       output,
-      model: MODEL,
+      model,
       selectedCount: entries.length,
       experimentIds: Array.from(new Set(entries.map(e => e.experiment_id))),
       experimentTitles: Array.from(new Set(entries.map(e => e.experiment_title)))
     });
   } catch (e) {
-    res.status(502).json({ error: 'AI request failed: ' + e.message });
+    return localProcessedEntriesFallback(req, res, {
+      entries,
+      mode,
+      projectIds,
+      summaryWordLimit,
+      reason: 'AI request failed: ' + e.message,
+      fallback: true
+    });
   }
 });
 
@@ -278,6 +325,7 @@ r.post('/observe', async (req, res) => {
 
   const exp = experimentId ? Experiments.get(experimentId, req.user) : null;
   if (experimentId && !exp) return res.status(404).json({ error: 'Experiment not found' });
+  if (exp?.archived_at) return res.status(409).json({ error: 'Experiment is archived (read-only). Restore it before editing.' });
   const recent = Array.isArray(recentEvents) ? recentEvents.slice(-8).map(e => ({
     kind: String(e.kind || '').slice(0, 24),
     text: String(e.text || '').slice(0, 220)
@@ -297,11 +345,11 @@ r.post('/observe', async (req, res) => {
   ].join('\n');
 
   try {
-    const resp = await fetch(API_URL, {
+    const resp = await fetch(chatCompletionsUrl(), {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
       body: JSON.stringify({
-        model: VISION_MODEL,
+        model: visionModel(),
         messages: [{
           role: 'user',
           content: [
@@ -325,6 +373,48 @@ r.post('/observe', async (req, res) => {
 });
 
 export default r;
+
+function localProcessedEntriesFallback(req, res, { entries, mode, projectIds, summaryWordLimit, reason, fallback }) {
+  const output = localProcessedEntries(entries, mode, summaryWordLimit);
+  const experiments = Array.from(new Set(entries.map(e => `${e.experiment_title} (${e.experiment_id})`)));
+  Audit.log(req.user.name, req.user.role, mode === 'action_plan' ? 'LOCAL_ACTION_PLAN_ENTRIES' : 'LOCAL_SUMMARISE_ENTRIES',
+    `${mode} ${fallback ? 'fallback' : 'local'} for ${entries.length} selected entries across ${experiments.length} experiment(s) | model local-template | reason ${String(reason || 'AI unavailable').slice(0, 180)}`,
+    { projectId: projectIds.length === 1 ? projectIds[0] : null });
+  return res.json({
+    mode,
+    output,
+    model: 'local-template',
+    selectedCount: entries.length,
+    experimentIds: Array.from(new Set(entries.map(e => e.experiment_id))),
+    experimentTitles: Array.from(new Set(entries.map(e => e.experiment_title))),
+    offline: true,
+    ...(fallback ? { fallback: true } : {})
+  });
+}
+
+function localProcessedEntries(entries, mode, summaryWordLimit) {
+  const sentences = extractEntrySentences(entries);
+  if (mode === 'action_plan') {
+    return applyBulletTemplate(sentences.join('\n'));
+  }
+  const summary = takeWords(sentences.join(' '), summaryWordLimit);
+  return summary || 'No source-backed summary was generated.';
+}
+
+function extractEntrySentences(entries) {
+  const out = [];
+  for (const entry of entries) {
+    const cleaned = stripMarkdown(entry.text)
+      .replace(/^(?:source transcript|raw ocr text|manual notes)\s*:\s*/gim, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    for (const sentence of splitSentences(cleaned)) {
+      const text = sentence.replace(/^\d+[\).:-]\s*/, '').trim();
+      if (text && !out.includes(text)) out.push(text);
+    }
+  }
+  return out;
+}
 
 function parseObservation(raw) {
   const cleaned = String(raw || '').replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
@@ -359,6 +449,16 @@ function outcomeStatusLabel(status) {
   }[String(status || 'running')] || 'Running';
 }
 
+function formatExperimentMetadata(metadata) {
+  const fields = metadata?.extra_fields && typeof metadata.extra_fields === 'object' ? metadata.extra_fields : {};
+  return Object.entries(fields)
+    .sort((a, b) => (Number(a[1]?.position) || 0) - (Number(b[1]?.position) || 0) || a[0].localeCompare(b[0]))
+    .map(([label, field]) => `${label}: ${[field?.value, field?.unit].filter(Boolean).join(' ')}`.trim())
+    .filter(Boolean)
+    .join('; ')
+    .slice(0, 1600);
+}
+
 function voiceTemplateInstruction(template) {
   if (template === 'lab_report') {
     return [
@@ -366,6 +466,14 @@ function voiceTemplateInstruction(template) {
       'Objective, Method, Results / Observations, Deviations / Uncertainty, Next Actions.',
       'Under each included heading, write 1 to 3 short "-" bullet lines.',
       'Omit any heading where the source has no supporting detail. Do not write a conclusion unless the source explicitly supports it.'
+    ].join(' ');
+  }
+  if (template === 'clean_voice_note') {
+    return [
+      'Return a cleaned dictated notebook entry with punctuation, capitalization, and paragraph breaks.',
+      'Keep it concise and chronological. Do not use headings or bullets.',
+      'Preserve exact measurements, units, sample IDs, tube IDs, negations, and uncertainty.',
+      'Do not add facts that are not in the transcript or raw lab notes.'
     ].join(' ');
   }
   if (template === 'concise_paragraph') {
@@ -394,6 +502,9 @@ function normalizeVoiceDraftOutput(raw, template) {
   if (template === 'lab_report') {
     return applyLabReportTemplate(cleaned);
   }
+  if (template === 'clean_voice_note') {
+    return applyCleanVoiceNoteTemplate(cleaned);
+  }
   if (template === 'auto_lab_note') {
     return applyAutoLabNoteTemplate(cleaned);
   }
@@ -403,6 +514,7 @@ function normalizeVoiceDraftOutput(raw, template) {
 function localVoiceDraft(transcript, rawNotes, template, exp = {}) {
   const sourceSentences = extractVoiceDraftSentences(transcript, rawNotes);
   if (template === 'lab_report') return localLabReportDraft(sourceSentences, exp);
+  if (template === 'clean_voice_note') return localCleanVoiceNoteDraft(transcript, rawNotes);
   if (template === 'concise_paragraph') {
     const paragraph = takeWords(sourceSentences.join(' '), 180);
     return paragraph || 'No source-backed voice note was generated.';
@@ -411,6 +523,173 @@ function localVoiceDraft(transcript, rawNotes, template, exp = {}) {
     return applyNumberedVoiceTemplate(sourceSentences.join('\n'));
   }
   return applyAutoLabNoteTemplate(sourceSentences.join('\n'));
+}
+
+function localVoiceDraftFallback(req, res, { transcript, rawNotes, template, exp, responseStyle, reason }) {
+  const output = localVoiceDraft(transcript, rawNotes, template, exp);
+  Audit.log(req.user.name, req.user.role, 'LOCAL_VOICE_DRAFT',
+    `${responseStyle} fallback for "${exp.title}" | template ${template} | transcript words ${countWords(transcript)} | raw note words ${countWords(rawNotes)} | model local-template | reason ${String(reason || 'AI unavailable').slice(0, 180)}`,
+    { projectId: exp.project_id });
+  return res.json({
+    style: responseStyle,
+    template,
+    output,
+    model: 'local-template',
+    experimentId: exp.id,
+    offline: true,
+    fallback: true
+  });
+}
+
+function localEntryDraftCheck(text) {
+  const source = String(text || '');
+  const checks = [
+    {
+      key: 'sample_id',
+      label: 'Sample / well / tube ID',
+      required: true,
+      present: hasSampleContext(source),
+      presentDetail: 'Sample, well, tube, lot, batch or replicate context found.',
+      suggestion: 'Add the sample, well, tube, strain, batch or lot ID.'
+    },
+    {
+      key: 'conditions',
+      label: 'Conditions',
+      required: true,
+      present: hasRunConditions(source),
+      presentDetail: 'Time, temperature, pH, speed, volume or concentration context found.',
+      suggestion: 'Add key run conditions such as time, temperature, pH, speed, volume or concentration.'
+    },
+    {
+      key: 'measurement',
+      label: 'Measurement / result value',
+      required: true,
+      present: hasMeasurement(source),
+      presentDetail: 'Numeric result, readout or measurement term found.',
+      suggestion: 'Add the measured value, readout, endpoint result or instrument observation.'
+    },
+    {
+      key: 'observation',
+      label: 'Observation',
+      required: true,
+      present: hasObservation(source),
+      presentDetail: 'Visible result or observed state found.',
+      suggestion: 'Add the visible observation or qualitative result.'
+    },
+    {
+      key: 'deviation',
+      label: 'Deviation / uncertainty',
+      required: false,
+      present: hasDeviationOrUncertainty(source),
+      presentDetail: 'Deviation, issue, uncertainty or explicit negative observation found.',
+      suggestion: 'State any deviation or uncertainty, or explicitly note that none was observed.'
+    },
+    {
+      key: 'next_action',
+      label: 'Next action',
+      required: false,
+      present: hasNextAction(source),
+      presentDetail: 'Follow-up action or storage/repeat instruction found.',
+      suggestion: 'Add the next action, storage condition, repeat plan or confirmation step.'
+    }
+  ];
+  const findings = checks.map(check => ({
+    key: check.key,
+    label: check.label,
+    required: check.required,
+    status: check.present ? 'present' : 'missing',
+    detail: check.present ? check.presentDetail : check.suggestion
+  }));
+  const missingRequired = findings.filter(f => f.required && f.status === 'missing').length;
+  const missingUseful = findings.filter(f => !f.required && f.status === 'missing').length;
+  const shortDraftPenalty = countWords(source) < 12 ? 10 : 0;
+  const score = Math.max(0, Math.min(100, 100 - missingRequired * 18 - missingUseful * 7 - shortDraftPenalty));
+  const status = missingRequired || score < 80 ? 'needs_details' : 'ready';
+  const suggestions = checks.filter(check => !check.present).map(check => check.suggestion);
+  return { status, score, findings, suggestions };
+}
+
+function hasSampleContext(text) {
+  return /\b(?:sample|tube|well|vial|plate|lot|batch|replicate|aliquot|strain|cell line)\s*[A-Z0-9._-]+\b/i.test(text)
+    || /\b[A-H]\d{1,2}\b/.test(text)
+    || /\b(?:lot|batch)\s*#?\s*[A-Z0-9._-]+\b/i.test(text);
+}
+
+function hasRunConditions(text) {
+  return /\b\d+(?:\.\d+)?\s*(?:°?\s*C|degrees?\s*C|minutes?|mins?|hours?|hrs?|sec(?:onds?)?|rpm|x\s*g|g\b|uL|µL|mL|L\b|mM|uM|µM|nM|%|pH)\b/i.test(text)
+    || /\b(?:incubat\w*|centrifug\w*|vortex\w*|mixed|dilut\w*|aliquot\w*|transferred)\b/i.test(text);
+}
+
+function hasMeasurement(text) {
+  return /\b\d+(?:\.\d+)?\s*(?:OD|RFU|RLU|AU|ng\/?uL|ng\/?µL|mg\/?mL|ug\/?mL|µg\/?mL|%|mM|uM|µM|nM)\b/i.test(text)
+    || /\b(?:absorbance|fluorescence|luminescence|yield|concentration|endpoint|signal|readout|Ct|Cq|RIN|OD600)\b/i.test(text);
+}
+
+function hasObservation(text) {
+  return /\b(?:observed|visible|cloudy|clear|precipitate|contamination|pellet|supernatant|colour|color|increased|decreased|remained|appeared|looked|leak|leaked|failed|success)\b/i.test(text);
+}
+
+function hasDeviationOrUncertainty(text) {
+  return /\b(?:unclear|uncertain|unsure|unknown|not clear|deviation|deviated|failed|error|issue|excluded|leak|leaked|contamination|no\s+\w+\s+observed|none observed|no deviation)\b/i.test(text);
+}
+
+function hasNextAction(text) {
+  return /\b(?:next|repeat|follow up|follow-up|verify|confirm|check|store|stored|send|prepare|rerun|re-run|continue|dispose|discard)\b/i.test(text);
+}
+
+function localCleanVoiceNoteDraft(transcript, rawNotes) {
+  const source = [rawNotes, transcript]
+    .map(part => String(part || '').trim())
+    .filter(Boolean)
+    .join('\n');
+  return applyCleanVoiceNoteTemplate(source);
+}
+
+function applyCleanVoiceNoteTemplate(raw) {
+  const sentences = [];
+  for (const line of String(raw || '').split(/\n+/)) {
+    const cleaned = line
+      .replace(/^(?:manual notes|source transcript|raw lab notes)\s*:\s*/i, '')
+      .replace(/^\d+[\).:-]\s*/, '')
+      .replace(/^-+\s*/, '')
+      .trim();
+    if (!cleaned || cleaned === '(none)') continue;
+    splitDictationClauses(cleaned).forEach(clause => {
+      const sentence = cleanVoiceSentence(clause);
+      if (sentence) sentences.push(sentence);
+    });
+  }
+  if (!sentences.length) return 'No source-backed voice note was generated.';
+  const paragraphs = [];
+  for (let i = 0; i < sentences.length; i += 3) {
+    paragraphs.push(sentences.slice(i, i + 3).join(' '));
+  }
+  return paragraphs.join('\n\n');
+}
+
+function splitDictationClauses(line) {
+  const prepared = String(line || '')
+    .replace(/\b(?:and then|then|next|after that|afterwards)\b/gi, '. ')
+    .replace(/\s+(?=(?:added|aliquoted|incubated|measured|stored|transferred|mixed|vortexed|centrifuged|ran|recorded)\b)/gi, '. ')
+    .replace(/\s+(?=(?:sample\s+(?:was|is|became|appeared|looked|cloudy|clear|showed|had)|no\s+)\b)/gi, '. ');
+  const parts = splitSentences(prepared);
+  return parts.length ? parts : [line.trim()];
+}
+
+function cleanVoiceSentence(sentence) {
+  let text = String(sentence || '')
+    .replace(/\s+/g, ' ')
+    .replace(/\s+([,.;:!?])/g, '$1')
+    .trim();
+  if (!text) return '';
+  text = text
+    .replace(/\b(sample|tube|well|vial|plate)\s+([a-z])(\d+)\b/gi, (_match, label, row, col) => `${label.toLowerCase()} ${row.toUpperCase()}${col}`)
+    .replace(/\bph\b/gi, 'pH')
+    .replace(/\brin\b/gi, 'RIN')
+    .replace(/\bod\b/gi, 'OD');
+  text = text.charAt(0).toUpperCase() + text.slice(1);
+  text = text.replace(/\bPh\b/g, 'pH');
+  return /[.!?]$/.test(text) ? text : `${text}.`;
 }
 
 function localLabReportDraft(sentences, exp = {}) {

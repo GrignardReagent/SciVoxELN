@@ -48,12 +48,14 @@ export const api = {
   projectMembers: id => req('GET', `/api/projects/${id}/members`),
   setProjectMember: (id, d) => req('PATCH', `/api/projects/${id}/members`, d),
   // experiments
-  experiments: () => req('GET', '/api/experiments'),
+  experiments: (includeArchived = false) => req('GET', `/api/experiments${query({ includeArchived })}`),
   experimentTemplates: (projectId = '') => req('GET', `/api/experiments/templates${query({ projectId })}`),
   experiment: id => req('GET', `/api/experiments/${id}`),
   createExperiment: d => req('POST', '/api/experiments', d),
   updateExperiment: (id, d) => req('PATCH', `/api/experiments/${id}`, d),
   lockExperiment: id => req('POST', `/api/experiments/${id}/lock`),
+  archiveExperiment: id => req('POST', `/api/experiments/${id}/archive`),
+  restoreExperiment: id => req('POST', `/api/experiments/${id}/restore`),
   deleteExperiment: (id, d) => req('DELETE', `/api/experiments/${id}`, d),
   saveExperimentTemplate: (id, d) => req('POST', `/api/experiments/${id}/template`, d),
   duplicateExperiment: (id, d) => req('POST', `/api/experiments/${id}/duplicate`, d),
@@ -78,6 +80,7 @@ export const api = {
   // entries
   entries: () => req('GET', '/api/entries'),
   entry: id => req('GET', `/api/entries/${id}`),
+  entryRevisions: id => req('GET', `/api/entries/${id}/revisions`),
   updateEntry: (id, d) => req('PATCH', `/api/entries/${id}`, d),
   commentEntry: (id, d) => req('POST', `/api/entries/${id}/comments`, d),
   signEntry: (id, d = {}) => req('POST', `/api/entries/${id}/sign`, d),
@@ -107,6 +110,7 @@ export const api = {
   aiHealth: () => req('GET', '/api/ai/health'),
   aiChat: (experimentId, messages) => req('POST', '/api/ai/chat', { experimentId, messages }),
   processEntries: (entryIds, mode) => req('POST', '/api/ai/process-entries', { entryIds, mode }),
+  checkEntryDraft: (experimentId, text) => req('POST', '/api/ai/check-entry-draft', { experimentId, text }),
   processVoiceDraft: (experimentId, transcript, rawNotes, template = 'auto_lab_note') =>
     req('POST', '/api/ai/process-voice-draft', { experimentId, transcript, rawNotes, template }),
   observeFrame: (experimentId, imageData, transcript, recentEvents) =>
@@ -131,7 +135,7 @@ export const api = {
   },
   async transcribe(blob) {
     const fd = new FormData();
-    fd.append('audio', blob, audioFilename(blob.type));
+    fd.append('audio', blob, blob?.name || audioFilename(blob.type));
     const res = await fetch('/api/stt/transcribe', { method: 'POST', body: fd, credentials: 'same-origin' });
     if (!res.ok) { let m = res.statusText; try { m = (await res.json()).error || m; } catch {} throw new Error(m); }
     return res.json();
@@ -149,5 +153,7 @@ function audioFilename(type = '') {
   if (type.includes('mp4')) return 'audio.mp4';
   if (type.includes('mpeg')) return 'audio.mp3';
   if (type.includes('wav')) return 'audio.wav';
+  if (type.includes('flac')) return 'audio.flac';
+  if (type.includes('ogg')) return 'audio.ogg';
   return 'audio.webm';
 }

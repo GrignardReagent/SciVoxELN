@@ -16,19 +16,26 @@ r.get('/:id', (req, res) => {
   res.json(en);
 });
 
+r.get('/:id/revisions', (req, res) => {
+  const revisions = Entries.revisions(req.params.id, req.user);
+  if (!revisions) return res.status(404).json({ error: 'Entry not found' });
+  res.json(revisions);
+});
+
 r.patch('/:id', (req, res) => {
   const en = Entries.get(req.params.id);
   if (!en) return res.status(404).json({ error: 'Entry not found' });
   const exp = Experiments.get(en.experiment_id, req.user);
   if (!exp) return res.status(404).json({ error: 'Entry not found' });
   if (!Projects.canAccessProject(req.user, exp.project_id, 'scientist')) return res.status(403).json({ error: 'Project write access required' });
+  if (exp.archived_at) return res.status(409).json({ error: 'Experiment is archived (read-only). Restore it before editing.' });
   if (exp.status === 'locked') return res.status(409).json({ error: 'Experiment is locked (read-only)' });
   if (en.signed_by) return res.status(409).json({ error: 'Signed entries cannot be edited' });
   if (en.type === 'voice_transcript') return res.status(409).json({ error: 'Voice source transcripts cannot be edited' });
   if (en.type === 'ocr_raw_text') return res.status(409).json({ error: 'Raw OCR source text cannot be edited' });
   const text = String(req.body?.text || '').trim();
   if (!text) return res.status(400).json({ error: 'Entry text is required' });
-  const updated = Entries.update(req.params.id, { text });
+  const updated = Entries.update(req.params.id, { text }, { editedBy: req.user.name, editedRole: req.user.role });
   Audit.log(req.user.name, req.user.role, 'EDIT_ENTRY',
     `${updated.type} entry ${updated.id} edited in "${exp.title}" | old hash ${en.hash} | new hash ${updated.hash} | excerpt: ${auditExcerpt(updated.text)}`,
     { projectId: exp.project_id });
@@ -40,6 +47,7 @@ r.post('/:id/comments', (req, res) => {
   if (!en) return res.status(404).json({ error: 'Entry not found' });
   if (isHiddenEntryType(en.type)) return res.status(409).json({ error: 'Hidden source entries cannot be commented on' });
   if (!Projects.canAccessProject(req.user, en.project_id, 'scientist')) return res.status(403).json({ error: 'Project write access required' });
+  if (en.experiment_archived_at) return res.status(409).json({ error: 'Experiment is archived (read-only). Restore it before editing.' });
   if (en.experiment_status === 'locked') return res.status(409).json({ error: 'Experiment is locked (read-only)' });
   const text = String(req.body?.text || '').trim();
   if (!text) return res.status(400).json({ error: 'Comment text is required' });
@@ -62,6 +70,7 @@ r.post('/:id/sign', (req, res) => {
   const exp = Experiments.get(en.experiment_id, req.user);
   if (!exp) return res.status(404).json({ error: 'Entry not found' });
   if (!Projects.canAccessProject(req.user, exp.project_id, 'scientist')) return res.status(403).json({ error: 'Project signer access required' });
+  if (exp.archived_at) return res.status(409).json({ error: 'Experiment is archived (read-only). Restore it before editing.' });
   if (!req.user.name || req.user.name === 'Unknown')
     return res.status(400).json({ error: 'Set your identity before signing' });
   if (en.signed_by) return res.status(409).json({ error: 'Entry is already signed' });

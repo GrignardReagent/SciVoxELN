@@ -4,6 +4,8 @@ import test from 'node:test';
 
 const ui = fs.readFileSync(new URL('../public/js/ui.js', import.meta.url), 'utf8');
 const app = fs.readFileSync(new URL('../public/js/app.js', import.meta.url), 'utf8');
+const experiments = fs.readFileSync(new URL('../public/js/views/experiments.js', import.meta.url), 'utf8');
+const observer = fs.readFileSync(new URL('../public/js/observer.js', import.meta.url), 'utf8');
 const styles = fs.readFileSync(new URL('../public/css/styles.css', import.meta.url), 'utf8');
 
 test('shared UI installs auto-growing textareas for views and modals', () => {
@@ -18,4 +20,27 @@ test('shared UI installs auto-growing textareas for views and modals', () => {
   assert.match(ui, /modal[\s\S]*autoGrowTextareas/);
   assert.match(app, /installTextareaAutoGrow/);
   assert.match(styles, /textarea\.txt\{[^}]*overflow-y:hidden/);
+});
+
+test('programmatic textarea fills recalculate auto-grow height', () => {
+  assert.match(experiments, /applyExperimentTemplate[\s\S]*autoGrowTextareas\(modalEl\)/);
+  assert.match(experiments, /textEl\.value = prompt[\s\S]*autoGrowTextareas\(textEl\)/);
+  assert.match(experiments, /polishedEl\.value = res\.output \|\| ''[\s\S]*autoGrowTextareas\(reviewWrap\)/);
+  assert.match(experiments, /text\.value = ''[\s\S]*autoGrowTextareas\(mount\)/);
+  assert.match(observer, /autoGrowTextareas/);
+  assert.match(observer, /transcriptEl\.value = t[\s\S]*autoGrowTextareas\(transcriptEl\)/);
+});
+
+test('shared auto-grow handles revealed editors and direct value assignments', () => {
+  assert.match(ui, /HTMLTextAreaElement\.prototype/);
+  assert.match(ui, /Object\.getOwnPropertyDescriptor\(HTMLTextAreaElement\.prototype, 'value'\)/);
+  assert.match(ui, /addEventListener\('focus'/);
+  assert.match(ui, /ResizeObserver/);
+  assert.match(ui, /clientWidth === 0 && el\.scrollHeight === 0/);
+});
+
+test('shared auto-grow recalculates when hidden textarea containers are revealed', () => {
+  assert.match(ui, /record\.type === 'attributes'/);
+  assert.match(ui, /attributeFilter:\s*\[\s*'hidden',\s*'style',\s*'class'\s*\]/);
+  assert.match(ui, /autoGrowTextareas\(record\.target\)/);
 });

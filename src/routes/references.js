@@ -28,6 +28,10 @@ const expOr404 = (req, res, { minRole = 'viewer', requireUnlocked = false } = {}
     res.status(409).json({ error: 'Experiment is locked (read-only)' });
     return null;
   }
+  if (requireUnlocked && exp.archived_at) {
+    res.status(409).json({ error: 'Experiment is archived (read-only). Restore it before editing.' });
+    return null;
+  }
   return exp;
 };
 
@@ -97,6 +101,7 @@ r.delete('/:id', (req, res) => {
   const exp = Experiments.get(ref.experiment_id, req.user);
   if (!exp) return res.status(404).json({ error: 'Reference not found' });
   if (!Projects.canAccessProject(req.user, exp.project_id, 'scientist')) return res.status(403).json({ error: 'Project write access required' });
+  if (exp.archived_at) return res.status(409).json({ error: 'Experiment is archived (read-only). Restore it before editing.' });
   if (exp.status === 'locked') return res.status(409).json({ error: 'Experiment is locked (read-only)' });
   Refs.remove(req.params.id);
   Audit.log(req.user.name, req.user.role, 'DELETE_REFERENCE', `"${ref.title}"`, { projectId: exp.project_id });

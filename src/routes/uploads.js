@@ -76,6 +76,7 @@ function evidenceUploadContext(req) {
   if (!Projects.canAccessProject(req.user, exp.project_id, 'scientist')) {
     return { error: { status: 403, error: 'Project write access required' } };
   }
+  if (exp.archived_at) return { error: { status: 409, error: 'Experiment is archived (read-only). Restore it before editing.' } };
   if (exp.status === 'locked') return { error: { status: 409, error: 'Experiment is locked (read-only)' } };
   return { exp };
 }

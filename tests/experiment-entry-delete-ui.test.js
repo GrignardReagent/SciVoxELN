@@ -3,10 +3,13 @@ import fs from 'node:fs';
 import test from 'node:test';
 
 const source = fs.readFileSync(new URL('../public/js/views/experiments.js', import.meta.url), 'utf8');
+const dashboardSource = fs.readFileSync(new URL('../public/js/views/dashboard.js', import.meta.url), 'utf8');
+const apiSource = fs.readFileSync(new URL('../public/js/api.js', import.meta.url), 'utf8');
 const ocrSource = fs.readFileSync(new URL('../public/js/ocr.js', import.meta.url), 'utf8');
 const styles = fs.readFileSync(new URL('../public/css/styles.css', import.meta.url), 'utf8');
+const index = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
 
-test('experiment exports are tucked into a three-dot menu with pdf html and json options', () => {
+test('experiment exports are tucked into a three-dot menu with pdf html json RO-Crate and ZIP bundle options', () => {
   assert.match(source, /data-export-toggle/);
   assert.match(source, /data-export-menu/);
   assert.match(source, /Export PDF/);
@@ -14,6 +17,10 @@ test('experiment exports are tucked into a three-dot menu with pdf html and json
   assert.match(source, /Export HTML/);
   assert.match(source, /format=html/);
   assert.match(source, /Export JSON/);
+  assert.match(source, /Export RO-Crate/);
+  assert.match(source, /format=rocrate/);
+  assert.match(source, /Export ZIP bundle/);
+  assert.match(source, /format=zip/);
 });
 
 test('experiment entries always render delete controls with admin-only disabled affordance', () => {
@@ -27,6 +34,20 @@ test('experiment detail renders an admin-gated delete button wired to a reasoned
   assert.match(source, /Locked experiments cannot be deleted/);
   assert.match(source, /Deletion reason required/);
   assert.match(source, /api\.deleteExperiment\(exp\.id,\s*\{\s*reason\s*\}\)/);
+});
+
+test('experiments support archive and restore without default list clutter', () => {
+  assert.match(source, /data-show-archived-experiments/);
+  assert.match(source, /Show archived/);
+  assert.match(source, /data-archive-experiment/);
+  assert.match(source, /data-restore-experiment/);
+  assert.match(source, /Archived — read only/);
+  assert.match(source, /Archive experiment/);
+  assert.match(source, /Restore experiment/);
+  assert.match(source, /api\.experiments\(showArchivedExperiments\)/);
+  assert.match(source, /api\.archiveExperiment/);
+  assert.match(source, /api\.restoreExperiment/);
+  assert.match(styles, /\.archived-badge/);
 });
 
 test('experiment setup surfaces structured scientific metadata in create edit and detail views', () => {
@@ -47,6 +68,18 @@ test('experiment setup surfaces structured scientific metadata in create edit an
   assert.match(source, /safety_notes:\s*m\.querySelector\('#mSafetyNotes'\)\.value\.trim\(\)/);
 });
 
+test('experiment detail supports compact custom metadata fields', () => {
+  assert.match(source, /Custom metadata/);
+  assert.match(source, /data-add-metadata/);
+  assert.match(source, /metadataFieldsHTML/);
+  assert.match(source, /experimentMetadataHTML/);
+  assert.match(source, /readMetadataFields/);
+  assert.match(source, /metadata:\s*readMetadataFields\(m\)/);
+  assert.match(source, /applyMetadataFields\(modalEl,\s*template\.metadata/);
+  assert.match(source, /setupSearchText\(e\)[\s\S]*metadataSearchText\(e\.metadata\)/);
+  assert.match(styles, /\.metadata-grid/);
+});
+
 test('experiment tags are editable searchable and rendered as visible chips', () => {
   assert.match(source, /id="mTags"/);
   assert.match(source, /Tags/);
@@ -57,6 +90,15 @@ test('experiment tags are editable searchable and rendered as visible chips', ()
   assert.match(source, /setupSearchText\(e\)[\s\S]*e\.tags/);
   assert.match(styles, /\.experiment-tags/);
   assert.match(styles, /\.experiment-tag/);
+});
+
+test('experiment cards and detail show immutable ELN record identifiers', () => {
+  assert.match(source, /ELN ID/);
+  assert.match(source, /eln_id/);
+  assert.match(source, /data-eln-id/);
+  assert.match(source, /experimentRecordIdHTML/);
+  assert.match(source, /setupSearchText\(e\)[\s\S]*e\.eln_id/);
+  assert.match(styles, /\.record-id/);
 });
 
 test('experiment detail supports related experiment links', () => {
@@ -96,6 +138,28 @@ test('experiment detail supports a procedure step checklist', () => {
   assert.match(source, /api\.deleteExperimentStep/);
   assert.match(source, /Next step/);
   assert.match(styles, /\.experiment-step/);
+});
+
+test('experiment indexes surface the next open procedure step without opening each record', () => {
+  assert.match(source, /experimentNextStepHTML/);
+  assert.match(source, /data-next-experiment-step/);
+  assert.match(source, /e\.next_step/);
+  assert.match(source, /openStepCount/);
+  assert.match(source, /completedStepCount/);
+  assert.match(dashboardSource, /experimentNextStepSummary/);
+  assert.match(dashboardSource, /Next step/);
+  assert.match(dashboardSource, /e\.next_step/);
+  assert.match(styles, /\.next-step-preview/);
+});
+
+test('dashboard has a compact open procedure steps to-do list', () => {
+  assert.match(dashboardSource, /openProcedureStepItems/);
+  assert.match(dashboardSource, /Open procedure steps/);
+  assert.match(dashboardSource, /data-next-action-exp/);
+  assert.match(dashboardSource, /nextActionRows/);
+  assert.match(dashboardSource, /ctx\.go\('experiments',\s*\{\s*id:\s*el\.dataset\.nextActionExp\s*\}\)/);
+  assert.match(styles, /\.next-action-list/);
+  assert.match(styles, /\.next-action-item/);
 });
 
 test('experiment outcome status is editable searchable and visible as a lab result badge', () => {
@@ -143,6 +207,17 @@ test('experiment entries expose audited collaboration comments', () => {
   assert.match(styles, /\.entry-comments/);
 });
 
+test('experiment entries expose revision history for edited records', () => {
+  assert.match(source, /data-entry-revisions/);
+  assert.match(source, /View revisions/);
+  assert.match(source, /openEntryRevisionsModal/);
+  assert.match(source, /entryRevisionsHTML/);
+  assert.match(source, /api\.entryRevisions/);
+  assert.match(source, /revision_count/);
+  assert.match(source, /Previous text/);
+  assert.match(styles, /\.entry-revisions/);
+});
+
 test('experiment AI assistant exposes scientist-ready quick prompt actions', () => {
   assert.match(source, /id="aiPromptBar"/);
   assert.match(source, /data-ai-prompt/);
@@ -154,6 +229,27 @@ test('experiment AI assistant exposes scientist-ready quick prompt actions', () 
   assert.match(source, /missing setup metadata/);
   assert.match(source, /protocol, materials, success criteria, safety notes/);
   assert.match(source, /promptBar\.querySelectorAll\('\[data-ai-prompt\]'\)/);
+});
+
+test('experiment detail can summarise notebook entries into a source-linked generated entry', () => {
+  assert.match(source, /data-summarise-experiment/);
+  assert.match(source, /Summarise entries/);
+  assert.match(source, /summariseExperimentEntries/);
+  assert.match(source, /showExperimentSummaryModal/);
+  assert.match(source, /api\.processEntries\(entryIds,\s*'summary'\)/);
+  assert.match(source, /sourceEntryIds:\s*entryIds/);
+});
+
+test('experiment detail can suggest source-backed procedure steps from notebook entries', () => {
+  assert.match(source, /data-suggest-experiment-steps/);
+  assert.match(source, /Suggest steps/);
+  assert.match(source, /suggestExperimentSteps/);
+  assert.match(source, /showSuggestedStepsModal/);
+  assert.match(source, /parseSuggestedSteps/);
+  assert.match(source, /data-save-suggested-steps/);
+  assert.match(source, /api\.processEntries\(entryIds,\s*'action_plan'\)/);
+  assert.match(source, /api\.addExperimentStep\(e\.id,\s*\{\s*text:\s*step\s*\}\)/);
+  assert.match(styles, /\.suggested-steps/);
 });
 
 test('experiment detail groups AI integrity and references into one sidebar column', () => {
@@ -170,23 +266,34 @@ test('main app shell suppresses page-level horizontal overflow on mobile', () =>
   assert.match(styles, /\.hashline\{[^}]*overflow-wrap:anywhere/);
 });
 
+test('top header wraps long experiment titles on mobile', () => {
+  assert.match(index, /class="top-title"/);
+  assert.match(styles, /\.top-title\{[^}]*min-width:0[^}]*flex:0 1 auto/);
+  assert.match(styles, /\.top h1\{[^}]*overflow-wrap:break-word/);
+  assert.match(styles, /\.top \.sub\{[^}]*overflow-wrap:anywhere/);
+  assert.match(styles, /@media\(max-width:560px\)[\s\S]*\.search\{[^}]*flex:0 1 30vw/);
+  assert.match(styles, /@media\(max-width:560px\)[\s\S]*\.search input\{[^}]*min-width:0/);
+  assert.match(styles, /@media\(max-width:560px\)[\s\S]*\.top-title\{[^}]*flex:1 1 auto/);
+});
+
 test('experiment detail hides write and review controls by project capability', () => {
   assert.match(source, /experimentAccess\(e\)/);
   assert.match(source, /access\.can_write/);
   assert.match(source, /access\.can_review/);
   assert.match(source, /access\.can_admin_delete/);
+  assert.match(source, /viewAccess\s*=\s*\{\s*\.\.\.access,\s*can_write:\s*canWrite,\s*can_review:\s*canReview\s*\}/);
   assert.match(source, /Read-only project role/);
   assert.match(source, /data-new-disabled/);
   assert.match(source, /canCreateExperiment/);
   assert.match(source, /canWrite\s*&&\s*!locked/);
   assert.match(source, /canReview\s*&&\s*!locked/);
-  assert.match(source, /mountReferences\(root,\s*e,\s*access\)/);
-  assert.match(source, /mountAssistant\(root,\s*e,\s*access\)/);
-  assert.match(source, /entryHTML\(en,\s*locked,\s*access\)/);
+  assert.match(source, /mountReferences\(root,\s*e,\s*viewAccess\)/);
+  assert.match(source, /mountAssistant\(root,\s*e,\s*viewAccess\)/);
+  assert.match(source, /entryHTML\(en,\s*locked\s*\|\|\s*archived,\s*viewAccess\)/);
 });
 
 test('entry signing modal limits reviewer meanings to reviewer-capable users', () => {
-  assert.match(source, /wireSignButtons\(root,\s*ctx,\s*e\.id,\s*access\)/);
+  assert.match(source, /wireSignButtons\(root,\s*ctx,\s*e\.id,\s*viewAccess\)/);
   assert.match(source, /signatureMeaningOptions/);
   assert.match(source, /access\.can_review/);
   assert.match(source, /Reviewer access required/);
@@ -202,9 +309,13 @@ test('voice composer uses quiet capture and review-state enhancement controls', 
   assert.match(source, /id="voiceTemplate"/);
   assert.match(source, /data-voice-source/);
   assert.match(source, /id="voiceDraftReport"/);
+  assert.match(source, /id="voiceCleanNote"/);
   assert.match(source, /Draft report/);
+  assert.match(source, /Clean up/);
   assert.match(source, /value="lab_report"/);
+  assert.match(source, /value="clean_voice_note"/);
   assert.match(source, /Lab report/);
+  assert.match(source, /Clean note/);
   assert.match(source, /Auto lab note/);
   assert.match(source, /Numbered observations/);
   assert.match(source, /Concise paragraph/);
@@ -213,9 +324,53 @@ test('voice composer uses quiet capture and review-state enhancement controls', 
   assert.match(source, /type:\s*'voice_transcript'/);
   assert.match(source, /sourceEntryIds:\s*\[rawEntry\.id\]/);
   assert.match(source, /voiceTemplate\s*=\s*'lab_report'/);
+  assert.match(source, /voiceTemplate\s*=\s*'clean_voice_note'/);
   assert.match(source, /voiceTranscript\.trim\(\)\s*\|\|\s*text\.value\.trim\(\)/);
   assert.doesNotMatch(source, /voiceDraftReportBtn\.disabled\s*=\s*!aiConfigured/);
+  assert.match(source, /voiceCleanNoteBtn\.disabled\s*=\s*!hasSource/);
   assert.match(source, /Local draft/);
+});
+
+test('voice composer can switch to server transcription even when live speech is supported', () => {
+  assert.match(source, /id="voiceModeSelect"/);
+  assert.match(source, /server_transcription/);
+  assert.match(source, /chooseVoiceMode/);
+  assert.match(source, /wireSelectedVoiceMode/);
+  assert.match(source, /Use server transcription/);
+  assert.match(source, /No speech detected[\s\S]*server transcription/);
+  assert.match(source, /voiceModeSelect\.onchange/);
+  assert.match(source, /useRecorder/);
+  assert.match(source, /useLiveSpeech/);
+});
+
+test('voice composer can check draft completeness before saving', () => {
+  assert.match(apiSource, /checkEntryDraft/);
+  assert.match(source, /id="entryDraftCheck"/);
+  assert.match(source, /Check draft/);
+  assert.match(source, /checkEntryDraft\(\)/);
+  assert.match(source, /api\.checkEntryDraft\(expId,\s*currentSaveText\(\)\)/);
+  assert.match(source, /showEntryDraftCheckModal/);
+  assert.match(source, /data-entry-draft-finding/);
+  assert.match(source, /entry-draft-check/);
+  assert.match(styles, /\.entry-draft-check/);
+});
+
+test('voice composer can transcribe an uploaded real audio file through server STT', () => {
+  assert.match(source, /id="voiceAudioFile"/);
+  assert.match(source, /accept="audio\/\*"/);
+  assert.match(source, /id="voiceUploadAudio"/);
+  assert.match(source, /Upload audio/);
+  assert.match(source, /processServerAudio/);
+  assert.match(source, /voiceAudioFile\.onchange/);
+  assert.match(source, /api\.transcribe\(file/);
+  assert.match(source, /setVoiceTranscript\(\[voiceTranscript,\s*tx \|\| ''\]/);
+  assert.match(source, /afterVoiceStop\(\)/);
+  assert.match(source, /Transcribed uploaded audio/);
+  assert.match(source, /Transcribed — draft failed/);
+  assert.match(source, /voiceBusy/);
+  assert.match(source, /const hasText = !!currentSaveText\(\)\.trim\(\)/);
+  assert.match(source, /saveBtn\.disabled = voiceBusy \|\| !hasText/);
+  assert.match(source, /checkDraftBtn\.disabled = voiceBusy \|\| !hasText/);
 });
 
 test('source transcript links fetch hidden source entries into a modal', () => {

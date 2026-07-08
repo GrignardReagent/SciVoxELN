@@ -51,7 +51,6 @@ and repo-native workflow tracking.
 ### Product Follow-Ups
 
 - [ ] SMTP delivery for email verification / password reset tokens.
-- [ ] ZIP signed export bundle (MVP has hashed JSON/HTML/PDF evidence exports).
 - [ ] LIMS / instrument connectors and scheduled on-prem to cloud sync.
 - [ ] Smart LIMS / instrument connectors to get accurate data from machines.
 - [ ] Per-project inventory scoping (inventory is still shared across the
@@ -61,12 +60,10 @@ and repo-native workflow tracking.
   current prototype samples still frames to control bandwidth and preserve
   reviewability.
 - [ ] Postgres repository implementation for larger enterprise deployments.
-- [ ] Feature improvement: "Summarise" button to summarise transcripts and notes
-  into a concise summary.
 - [ ] Feature improvement: Observe run.
-- [ ] Feature improvement: AI assistant - predictive suggestions for user entries.
-- [ ] Feature improvement: Enhance voice entry with auto-punctuation, auto-capitalization, and auto-paragraphing.
-- [ ] Feature improvement: Enhance OCR functionality with better handwriting recognition.
+- [ ] Feature improvement: Add model-backed or trained handwriting OCR for
+  difficult scans; current Tesseract OCR now flags low-confidence output for
+  manual correction.
 - [ ] Repository hygiene: remove tracked runtime `data/` files from history /
   future commits in a dedicated cleanup, leaving runtime state gitignored.
 
@@ -80,24 +77,36 @@ and repo-native workflow tracking.
 
 - Core notebook: experiments with scientist-facing outcome status, procedure
   step checklists, file attachments, custom experiment tags, related experiment
-  links, entries (note/voice/OCR), audited entry comments, search, dashboard.
+  links, entries (note/voice/OCR), audited entry comments, search, dashboard;
+  experiment cards and dashboard rows surface the next open procedure step plus
+  compact step progress, and the dashboard groups open procedure steps into a
+  small click-through to-do list so scientists can resume work without opening
+  each record.
 - Structured experiment setup metadata: hypothesis, protocol/method, materials
   and reagents, success criteria, and safety notes persist with experiments and
   export evidence; proven setups can be saved as project-scoped experiment
   templates or repeated directly from an existing run to start follow-up
   experiments without copying observations, signatures or attachments.
+- Custom experiment metadata: scientists can add compact key/value/unit fields
+  such as cell line, strain, instrument, temperature or assay readout without
+  expanding the main setup form. Metadata persists as structured JSON, is copied
+  through templates and repeat setup, is included in exports/search/AI context,
+  and stays visible as a small grid on experiment detail pages.
 - Voice entry with Start / Pause / Resume / Stop: Web Speech where supported,
-  mobile-safe server STT via OpenAI (`auto`/`openai`) or on-prem Whisper, and
-  AI-polished or local-template lab-report drafts linked to hidden raw
+  mobile-safe server STT via OpenAI (`auto`/`openai`) or on-prem Whisper,
+  upload of existing audio recordings when server STT is available, one-click
+  cleanup for punctuation, capitalization, sample/tube IDs and paragraphing,
+  and AI-polished or local-template lab-report drafts linked to hidden raw
   notes/transcript source entries.
 - Observe run mode: mobile camera preview + live speech + action timeline, with
   optional OpenAI visual observations from periodic still frames.
 - OCR handwriting scan (Tesseract.js) via upload or live camera (rear camera on
-  phones); image is contrast-normalized/adaptive-thresholded before OCR, then
-  both the original scan and processed OCR image are uploaded/stored with the
-  entry as reviewable evidence, raw OCR text is preserved as hidden source
-  evidence behind the corrected notebook entry, and evidence uploads are guarded
-  by project write access and experiment lock state.
+  phones); the browser compares OCR from the processed scan and original scan,
+  selects the higher-quality candidate, flags low-confidence handwriting output
+  for correction, then uploads/stores both the original scan and processed OCR
+  image with the entry as reviewable evidence. Raw OCR text is preserved as
+  hidden source evidence behind the corrected notebook entry, and evidence
+  uploads are guarded by project write access and experiment lock state.
 - Sketch-to-figure capture: browser drawing canvas, cleaned diagram upload,
   raw sketch preservation, and figure entries with raw/clean image evidence.
 - Audit-ready controls: SHA-256 content fingerprints, password-confirmed
@@ -110,15 +119,31 @@ and repo-native workflow tracking.
   management includes a visible project-role capability matrix, and experiment
   screens hide or disable write/review controls according to the current
   project role.
-- Experiment evidence export as hashed JSON, HTML or PDF packages, including
-  setup metadata, outcome status, procedure steps, entry comments, file
-  attachments and related experiment links.
+- Experiment evidence export as hashed JSON, HTML, PDF, RO-Crate JSON-LD
+  metadata packages, or ZIP evidence bundles, including setup metadata, outcome
+  status, procedure steps, entry comments, file attachments, related experiment
+  links, audit data, manifests and per-file SHA-256 checksums.
+- Experiment archive lifecycle: scientists can archive experiments without
+  deleting lab history, archived records are hidden from the default list and
+  search, remain directly viewable with entries/evidence intact, become
+  read-only until restored, and are covered by archive/restore audit events.
 - Access-scoped ranked search across experiments, entries and references.
 - Entries Library supports selected-entry summarisation/action-plan drafting
   and keeps generated-entry provenance inspectable with source chips that open
   hidden source records such as raw voice transcripts. Multi-line text boxes
-  auto-expand as scientists type, including modal and dynamically-rendered
-  forms, so long notes do not require scrolling inside the field.
+  auto-expand as scientists type and after app-filled content such as
+  templates, prompts, voice drafts and live transcripts, including modal and
+  dynamically-rendered forms, direct value updates, and hidden editors revealed
+  for editing, so long notes do not require scrolling inside the field.
+- Experiment detail pages can summarise the current notebook entries into a
+  concise generated entry from the notebook header. The flow uses configured AI
+  when available, falls back to a deterministic local source-only template when
+  offline, saves generated summaries with source-entry provenance chips, and
+  can convert notebook observations into selectable procedure checklist steps.
+  The entry composer also includes a lightweight pre-save `Check draft` action
+  that scores the current notebook text for sample context, conditions,
+  measurements/results, observations, deviations/uncertainty and next actions,
+  returning local suggestions without blocking save.
 - Experiment planner and Inventory modules; starting a plan preserves planned
   hypothesis, protocol steps, materials and success criteria in the linked
   experiment, including selected inventory lot, catalogue, location, stock,
@@ -153,9 +178,11 @@ and repo-native workflow tracking.
 - Theming: light/dark presets with the requested palettes, user-editable
   5-colour palette, live apply + no-flash pre-paint (`public/js/theme.js`),
   top-bar toggle + Settings -> Appearance.
-- Mobile: responsive layout + slide-in nav drawer + viewport-fit; Inventory
-  switches from the desktop table to full-width reagent cards on phone-sized
-  screens so status and stock actions stay visible.
+- Mobile: responsive layout + slide-in nav drawer + viewport-fit; long
+  experiment titles wrap inside the sticky header instead of colliding with
+  search/theme controls, and Inventory switches from the desktop table to
+  full-width reagent cards on phone-sized screens so status and stock actions
+  stay visible.
 - Deployment: Dockerfile, docker-compose (+ whisper, prototype tunnel, public
   HTTPS/Caddy profile, and named Cloudflare Tunnel profile), `.env.example`,
   README, CLAUDE.md.
@@ -210,10 +237,613 @@ and repo-native workflow tracking.
   selected window as `.ics`, and create a tokenized subscription URL for
   external calendar apps.
 - [x] Auto-expand multi-line text boxes. Textareas in views and modals grow as
-  users type long notes and recalculate on viewport resize so wrapped mobile
-  text remains visible without internal field scrolling.
+  users type long notes, when hidden editors or hidden containers are revealed,
+  after direct app-filled value updates, and on viewport/element resize so
+  wrapped mobile text remains visible without internal field scrolling.
+- [x] Feature improvement: "Summarise" button to summarise notebook entries into
+  a concise, source-linked summary from experiment detail pages.
+- [x] Feature improvement: "Suggest steps" button to turn current notebook
+  observations into selectable, source-backed procedure checklist actions.
+- [x] Surface the next open procedure step on experiment indexes. Experiment
+  cards and dashboard rows now show the first incomplete checklist step and
+  compact open/done counts so active lab work is findable at a glance.
+- [x] Add a compact dashboard procedure-step to-do list. The Attention panel
+  groups open experiment steps across active records and opens the associated
+  experiment with one click.
+- [x] Feature improvement: AI assistant predictive suggestions for user
+  entries. The composer `Check draft` action flags missing scientific details
+  before saving typed notes, voice drafts or OCR-derived entries.
+- [x] Add compact custom metadata fields for FAIR experiment records. Metadata
+  is stored as structured JSON, copied through reusable setups, searchable and
+  exportable without overloading the core notebook UI.
+- [x] Add RO-Crate JSON-LD export for FAIR interoperability. Experiment exports
+  now include a compact machine-readable graph for the crate root, ELN record,
+  entries, attachments, references, audit integrity and custom metadata.
+- [x] Add ZIP signed export bundle. Experiment exports now include a single
+  `format=zip` evidence package with JSON, HTML, RO-Crate metadata, audit
+  data, attachment bytes, a manifest, and SHA-256 checksums for every bundled
+  file.
+- [x] Add entry revision history for edited notebook records. Each text edit
+  stores the previous text, hash, update timestamp and editor identity; edited
+  entries show a compact revision control, expose a dedicated revisions API,
+  and include prior versions in JSON/HTML/PDF experiment exports.
+- [x] Add experiment archive/restore lifecycle. Archived experiments are hidden
+  from default lists and search, shown under a `Show archived` toggle, marked
+  read-only on detail pages, and restorable without deleting entries or
+  evidence.
+- [x] Improve OCR review on real handwritten notes. The OCR flow now compares
+  processed and original scan candidates, keeps the cleaner result, flags
+  low-confidence handwriting output with a confidence value, and expands the
+  OCR review fields after programmatic extraction so scientists can correct the
+  whole note without scrolling inside the field.
+- [x] Enhance voice entry with auto-punctuation, auto-capitalization, and
+  auto-paragraphing. Scientists can click `Clean up` to turn raw dictated
+  bench notes into a concise visible entry while preserving the source
+  transcript/manual notes as hidden evidence.
+- [x] Fix mobile experiment header title wrapping. Long experiment titles now
+  wrap within the sticky header on phone-sized screens without overlapping
+  navigation, theme, or search controls.
 
 ## Change Log
+
+### 2026-07-08T15:12:00Z - Recalculate auto-grow when hidden text boxes are revealed
+
+- Task: SVX-000
+- Branch: `master`
+- Summary: Extended the shared textarea auto-grow observer to watch `hidden`,
+  `style`, and `class` changes across the app shell. Textareas that are filled
+  while hidden and then revealed now recalculate through the same shared helper
+  as newly-rendered or directly typed fields, preventing internal field
+  scrolling in late-revealed panels.
+- Validation: Added failing static coverage in
+  `tests\textarea-autogrow-ui.test.js`, confirmed RED for the missing attribute
+  observer, then made the focused test pass with 4/4 tests. Chrome connector
+  and Computer Use were attempted first, but both failed before browser attach
+  with the known WSL workspace URI error. Playwright browser fallback launched
+  but repeatedly timed out or was cut off by the WSL-to-Windows bridge; after
+  that even `cmd.exe /C echo` failed with `UtilAcceptVsock: accept4 failed 110`.
+  Browser verification for this slice is therefore blocked rather than passed.
+- Files:
+  - `TRACKING.md`
+  - `public/js/ui.js`
+  - `tests/textarea-autogrow-ui.test.js`
+
+### 2026-07-08T13:40:19Z - Add dashboard open procedure to-do list
+
+- Task: SVX-000
+- Branch: `master`
+- Reference scan: eLabFTW documents procedure steps as experiment/resource
+  actions, shows the next step on the main index, and provides a To-Do List view
+  for next steps. SciVox had index-level next-step previews but no dashboard
+  aggregate for open lab actions.
+- Summary: Added a compact `Open procedure steps` section to the dashboard
+  Attention panel. It uses the existing experiment list step fields, shows up
+  to six open next actions with experiment title and open/done counts, and
+  opens the associated experiment without adding another top-level module.
+- Validation: Added failing static UI coverage in
+  `tests\experiment-entry-delete-ui.test.js`, confirmed RED, then made the
+  focused test pass. Focused
+  `node.exe --test tests/experiment-entry-delete-ui.test.js tests/tracking.test.js`
+  passed with 39 tests. Chrome and Computer Use were attempted first, but both
+  connectors rejected the WSL workspace URI; headed Edge/Playwright fallback at
+  `http://127.0.0.1:58018/` verified account creation, experiment creation,
+  adding two procedure steps, completing the first step, dashboard `Open
+  procedure steps` list content, click-through from a to-do item back to the
+  experiment, mobile rendering without horizontal overflow, and no relevant
+  console errors beyond the expected pre-login auth 401.
+- Browser evidence:
+  - `C:\Users\s1732775\AppData\Local\Temp\scivox-dashboard-todo-browser-1783518110236\dashboard-todo-desktop.png`
+  - `C:\Users\s1732775\AppData\Local\Temp\scivox-dashboard-todo-browser-1783518110236\dashboard-todo-clickthrough-desktop.png`
+  - `C:\Users\s1732775\AppData\Local\Temp\scivox-dashboard-todo-browser-1783518110236\dashboard-todo-mobile.png`
+- Files:
+  - `TRACKING.md`
+  - `public/js/views/dashboard.js`
+  - `public/css/styles.css`
+  - `tests/experiment-entry-delete-ui.test.js`
+
+### 2026-07-08T13:34:11Z - Surface next procedure step on experiment indexes
+
+- Task: SVX-000
+- Branch: `master`
+- Reference scan: eLabFTW exposes experiment steps as a first-class workflow and
+  shows the next step/to-do state from experiment indexes. SciVox already had
+  audited procedure checklists on detail pages, but the next action was hidden
+  until the scientist opened a specific experiment.
+- Summary: Added compact procedure-step progress fields to the experiment list
+  query: `stepCount`, `openStepCount`, `completedStepCount`, `next_step_id` and
+  `next_step`. Experiment cards and recent dashboard rows now show the next
+  open procedure step with open/done counts, or an all-complete state, without
+  adding another button or extra list requests.
+- Validation: Added failing API coverage in
+  `tests\experiment-next-step-index.test.js` and static UI coverage in
+  `tests\experiment-entry-delete-ui.test.js`, confirmed RED, then made focused
+  `node.exe --test tests/experiment-next-step-index.test.js
+  tests/experiment-entry-delete-ui.test.js` pass with 34 tests. Focused
+  tracking coverage passed with 39 tests. Chrome and Computer Use were
+  attempted first, but both connectors rejected the WSL workspace URI; headed
+  Edge/Playwright fallback at `http://127.0.0.1:58016/` verified account
+  creation, experiment creation, adding two procedure steps, completing the
+  first step, dashboard preview of the second step as `Next step`, experiment
+  card preview with `1 open · 1/2 done`, mobile rendering without horizontal
+  overflow, and no relevant console errors beyond the expected pre-login auth
+  401.
+- Browser evidence:
+  - `C:\Users\s1732775\AppData\Local\Temp\scivox-next-step-index-browser-1783517778953\next-step-dashboard-desktop.png`
+  - `C:\Users\s1732775\AppData\Local\Temp\scivox-next-step-index-browser-1783517778953\next-step-experiments-desktop.png`
+  - `C:\Users\s1732775\AppData\Local\Temp\scivox-next-step-index-browser-1783517778953\next-step-experiments-mobile.png`
+- Files:
+  - `TRACKING.md`
+  - `src/db.js`
+  - `public/js/views/experiments.js`
+  - `public/js/views/dashboard.js`
+  - `public/css/styles.css`
+  - `tests/experiment-next-step-index.test.js`
+  - `tests/experiment-entry-delete-ui.test.js`
+
+### 2026-07-08T13:25:51Z - Add entry draft completeness check
+
+- Task: SVX-000
+- Branch: `master`
+- Reference scan: eLabFTW documents experiment entries with core title, status,
+  tags, main text, custom fields, steps, links and attachments, while ELN
+  automation research highlights that gathering metadata automatically can
+  reduce documentation effort and repetitive human-entry errors.
+- Summary: Added a compact `Check draft` action to the experiment entry
+  composer. It calls a local rules-based draft checker for unlocked,
+  scientist-writable experiments, scores whether the current note captures
+  sample context, run conditions, measurements/results, observations,
+  deviations or uncertainty and next actions, and shows missing-detail
+  suggestions in a modal without blocking save. Checks are audit logged as
+  `LOCAL_CHECK_ENTRY_DRAFT`.
+- Validation: Added failing API coverage in
+  `tests\entry-draft-check.test.js` and static UI coverage in
+  `tests\experiment-entry-delete-ui.test.js`, confirmed RED, then made focused
+  tests pass. Focused `node.exe --test tests/entry-draft-check.test.js
+  tests/experiment-entry-delete-ui.test.js tests/tracking.test.js` passed with
+  38 tests. Chrome and Computer Use were attempted first, but both connectors
+  rejected the WSL workspace URI; headed Edge/Playwright fallback at
+  `http://127.0.0.1:58014/` verified account creation, experiment creation,
+  sparse raw-note `Check draft` reporting `Needs details · 40/100`, sample and
+  measurement suggestions, complete raw-note `Ready · 100/100`, mobile modal
+  rendering without horizontal overflow, and no relevant console errors beyond
+  the expected pre-login auth 401.
+- Browser evidence:
+  - `C:\Users\s1732775\AppData\Local\Temp\scivox-entry-draft-check-browser-1783517283031\draft-check-missing-desktop.png`
+  - `C:\Users\s1732775\AppData\Local\Temp\scivox-entry-draft-check-browser-1783517283031\draft-check-ready-desktop.png`
+  - `C:\Users\s1732775\AppData\Local\Temp\scivox-entry-draft-check-browser-1783517283031\draft-check-missing-mobile.png`
+- Files:
+  - `TRACKING.md`
+  - `src/routes/ai.js`
+  - `public/js/api.js`
+  - `public/js/views/experiments.js`
+  - `public/css/styles.css`
+  - `tests/entry-draft-check.test.js`
+  - `tests/experiment-entry-delete-ui.test.js`
+
+### 2026-07-08T13:08:29Z - Add AI-suggested procedure steps
+
+- Task: SVX-000
+- Branch: `master`
+- Reference scan: eLabFTW treats experiment steps as first-class actions and
+  shows the next step or to-do list for experiments; SciVox already had manual
+  checklist steps and source-backed entry processing, but no experiment-detail
+  workflow to turn observations into next actions.
+- Summary: Added a compact `Suggest steps` button to writable, unlocked
+  experiment procedure cards when notebook entries exist. The modal calls the
+  existing `action_plan` entry processor, parses source-backed bullets into
+  selectable candidates, supports copying, and saves selected items through the
+  audited procedure-step API.
+- Validation: Added failing static UI coverage in
+  `tests\experiment-entry-delete-ui.test.js` and extended
+  `tests\ai-entry-summary-offline.test.js` to lock the offline four-bullet
+  action-plan contract, confirmed RED, then made focused tests pass. Bundled
+  Node `node.exe --test` passed with 77 tests. Chrome and Computer Use were
+  attempted first, but both connectors rejected the WSL workspace URI; headed
+  Edge/Playwright fallback at `http://127.0.0.1:58007/` verified account
+  creation, experiment setup with notebook entries, visible `Suggest steps`,
+  source-backed modal suggestions, saving four suggestions into the procedure
+  checklist, mobile rendering without horizontal overflow, and no relevant
+  console errors beyond the expected pre-login auth 401.
+- Browser evidence:
+  - `C:\Users\s1732775\AppData\Local\Temp\scivox-suggest-steps-browser-1783516236438\suggest-steps-before-desktop.png`
+  - `C:\Users\s1732775\AppData\Local\Temp\scivox-suggest-steps-browser-1783516236438\suggest-steps-modal-desktop.png`
+  - `C:\Users\s1732775\AppData\Local\Temp\scivox-suggest-steps-browser-1783516236438\suggest-steps-added-desktop.png`
+  - `C:\Users\s1732775\AppData\Local\Temp\scivox-suggest-steps-browser-1783516236438\suggest-steps-before-mobile.png`
+  - `C:\Users\s1732775\AppData\Local\Temp\scivox-suggest-steps-browser-1783516236438\suggest-steps-modal-mobile.png`
+  - `C:\Users\s1732775\AppData\Local\Temp\scivox-suggest-steps-browser-1783516236438\suggest-steps-added-mobile.png`
+- Files:
+  - `TRACKING.md`
+  - `public/css/styles.css`
+  - `public/js/views/experiments.js`
+  - `tests/ai-entry-summary-offline.test.js`
+  - `tests/experiment-entry-delete-ui.test.js`
+
+### 2026-07-08T12:46:49Z - Add ZIP experiment evidence bundle
+
+- Task: SVX-000
+- Branch: `master`
+- Reference scan: eLabFTW's official documentation lists experiment PDF export,
+  ZIP archive export, audit/revision history, immutable archives, and
+  human-readable plus machine-readable exportability as ELN expectations. The
+  SciVox gap was that exports were individually available but not packaged as a
+  single transferable evidence bundle.
+- Summary: Added `format=zip` to `/api/experiments/:id/export`, returning a
+  dependency-light stored ZIP archive as `*-evidence-bundle.zip`. The bundle
+  includes `manifest.json`, `experiment-export.json`, `experiment-export.html`,
+  `ro-crate-metadata.json`, `audit.json`, and available attachment bytes under
+  `attachments/`; the manifest records experiment identity, ELN ID, export
+  fingerprint, per-file byte counts and SHA-256 checksums. The experiment
+  export menu now includes `Export ZIP bundle`.
+- Validation: Added failing API coverage in
+  `tests\experiment-zip-export.test.js` and static UI coverage in
+  `tests\experiment-entry-delete-ui.test.js`, confirmed RED, then made focused
+  tests pass. Also reran `tests\experiment-rocrate-export.test.js` and
+  `tests\mvp-api.test.js` to guard existing JSON/HTML/PDF/RO-Crate exports.
+- Browser evidence: Chrome and Computer Use were attempted first, but both
+  connectors rejected the WSL workspace URI before bootstrap; headed
+  Edge/Playwright fallback at `http://127.0.0.1:57999/` verified account
+  creation, experiment creation, visible `Export ZIP bundle` menu action,
+  fetched `application/zip` export, ZIP entries for manifest, JSON, HTML,
+  RO-Crate metadata, audit and attachment bytes, manifest file hashes, matching
+  attachment SHA-256, mobile rendering without horizontal overflow, and no
+  relevant console errors beyond the expected pre-login auth 401.
+- Browser screenshots:
+  - `C:\Users\s1732775\AppData\Local\Temp\scivox-zip-browser-1783515071214\zip-export-menu-desktop.png`
+  - `C:\Users\s1732775\AppData\Local\Temp\scivox-zip-browser-1783515071214\zip-export-menu-mobile.png`
+- Files:
+  - `TRACKING.md`
+  - `src/routes/experiments.js`
+  - `public/js/views/experiments.js`
+  - `tests/experiment-zip-export.test.js`
+  - `tests/experiment-entry-delete-ui.test.js`
+
+### 2026-07-08T12:31:23Z - Add RO-Crate JSON-LD experiment export
+
+- Task: SVX-000
+- Branch: `master`
+- Reference scan: RO-Crate 1.1 is a Recommendation with a JSON-LD context at
+  `https://w3id.org/ro/crate/1.1/context`; the FAIR export gap was that SciVox
+  had hashed JSON/HTML/PDF exports but no linked-data metadata graph for
+  interoperable reuse.
+- Summary: Added `format=rocrate` to `/api/experiments/:id/export`, returning
+  `application/ld+json` as a `*-ro-crate-metadata.json` download. The graph
+  describes the crate root, experiment dataset, entries, attachments,
+  references, custom metadata fields, setup fields and audit/integrity hash.
+  The experiment export menu now includes `Export RO-Crate`.
+- Validation: Added failing API coverage in
+  `tests\experiment-rocrate-export.test.js` and static UI coverage in
+  `tests\experiment-entry-delete-ui.test.js`, confirmed RED, then made focused
+  tests pass. Bundled Node `node.exe --test` passed with 75 tests. Chrome and
+  Computer Use were attempted first, but both connectors rejected the WSL
+  workspace URI; headed Edge/Playwright fallback at `http://127.0.0.1:57990/`
+  verified account creation, experiment creation, visible `Export RO-Crate`
+  menu action, fetched `application/ld+json` export, experiment/entry/reference
+  graph nodes, ELN ID, integrity hash, mobile rendering without horizontal
+  overflow, and no relevant console errors beyond the expected pre-login auth
+  401.
+- Browser evidence:
+  - `C:\Users\s1732775\AppData\Local\Temp\scivox-rocrate-browser-1783514023792\rocrate-export-menu-desktop.png`
+  - `C:\Users\s1732775\AppData\Local\Temp\scivox-rocrate-browser-1783514023792\rocrate-export-menu-mobile.png`
+- Files:
+  - `TRACKING.md`
+  - `src/routes/experiments.js`
+  - `public/js/views/experiments.js`
+  - `tests/experiment-rocrate-export.test.js`
+  - `tests/experiment-entry-delete-ui.test.js`
+
+### 2026-07-08T12:25:25Z - Harden auto-expanding text boxes
+
+- Task: SVX-000
+- Branch: `master`
+- Summary: Hardened the shared textarea auto-grow helper so every prepared
+  multiline field recalculates when users type, when a hidden editor receives
+  focus after being revealed, when its rendered width changes, and when app code
+  assigns directly to `.value`. Hidden textareas are no longer collapsed to a
+  zero-height measurement before they become visible.
+- Validation: Added failing static UI coverage in
+  `tests\textarea-autogrow-ui.test.js`, confirmed RED, then made the focused
+  test pass. Bundled Node `node.exe --test` passed with 74 tests. Chrome and
+  Computer Use were attempted first, but both connectors rejected the WSL
+  workspace URI; headed Edge/Playwright fallback at `http://127.0.0.1:57988/`
+  verified account creation, New Experiment Objective typing auto-grow,
+  direct programmatic Protocol `.value` auto-grow, Raw lab notes auto-grow,
+  saved-entry hidden editor reveal/focus auto-grow, mobile reflow without
+  internal textarea scrolling or horizontal page overflow, and no relevant
+  console errors beyond the expected pre-login auth 401.
+- Browser evidence:
+  - `C:\Users\s1732775\AppData\Local\Temp\scivox-autogrow-browser-1783513484886\raw-notes-autogrow-desktop.png`
+  - `C:\Users\s1732775\AppData\Local\Temp\scivox-autogrow-browser-1783513484886\entry-editor-revealed-desktop.png`
+  - `C:\Users\s1732775\AppData\Local\Temp\scivox-autogrow-browser-1783513484886\entry-editor-revealed-mobile.png`
+- Files:
+  - `TRACKING.md`
+  - `public/js/ui.js`
+  - `tests/textarea-autogrow-ui.test.js`
+
+### 2026-07-08T11:49:42Z - Add entry revision history
+
+- Task: SVX-000
+- Branch: `master`
+- Reference scan: eLabFTW exposes revision/changelog actions for experiment
+  entries, which highlighted that edited notebook records should keep visible
+  prior versions rather than only showing an edited timestamp.
+- Summary: Added immutable entry revision storage. Editing an unsigned notebook
+  entry now records the previous text, previous hash, previous update time and
+  editor identity before updating the current entry and fingerprint. Experiment
+  payloads expose `revision_count`, `/api/entries/:id/revisions` returns the
+  prior versions, the experiment page shows a compact `View revisions` button
+  and modal for edited entries, and JSON/HTML/PDF exports include entry
+  revisions.
+- Validation: Added failing API/export/migration coverage in
+  `tests\entry-revisions.test.js` and static UI coverage in
+  `tests\experiment-entry-delete-ui.test.js`, confirmed RED, then made the
+  focused tests pass. `npm test` could not run because the bundled runtime has
+  no `npm` binary; the equivalent project command
+  `node.exe --test` passed with 67 tests.
+  Chrome and Computer Use were attempted first but rejected the WSL workspace
+  URI; headed Edge/Playwright fallback at `http://127.0.0.1:61110/` verified
+  entry edit/save, `View revisions (1)`, revision modal previous text/hash,
+  export JSON revision content, desktop and mobile rendering, no horizontal
+  mobile overflow, no relevant console/page errors, and auto-growing edit and
+  revision textareas with no internal overflow.
+- Browser evidence:
+  - `C:\Users\s1732775\AppData\Local\Temp\scivox-entry-revisions-smoke-LhobE2\screenshots\entry-revisions-desktop.png`
+  - `C:\Users\s1732775\AppData\Local\Temp\scivox-entry-revisions-smoke-LhobE2\screenshots\entry-revisions-modal-desktop.png`
+  - `C:\Users\s1732775\AppData\Local\Temp\scivox-entry-revisions-smoke-LhobE2\screenshots\entry-revisions-modal-mobile.png`
+- Files:
+  - `TRACKING.md`
+  - `src/db.js`
+  - `src/routes/entries.js`
+  - `src/routes/experiments.js`
+  - `public/js/api.js`
+  - `public/js/views/experiments.js`
+  - `public/css/styles.css`
+  - `tests/entry-revisions.test.js`
+  - `tests/experiment-entry-delete-ui.test.js`
+
+### 2026-07-08T11:40:19Z - Add custom experiment metadata fields
+
+- Task: SVX-000
+- Branch: `master`
+- Reference scan: eLabFTW documents a `metadata` JSON attribute on
+  experiments/items/templates and custom fields with types, values, units,
+  positions and templates; CEDAR frames reusable structured metadata as JSON,
+  JSON-LD or RDF for FAIR scientific workflows.
+- Summary: Added compact custom metadata fields to experiment create/edit/detail
+  flows. The database now stores normalized `metadata.extra_fields` JSON for
+  experiments and experiment templates, parses it back into API objects, copies
+  it through template creation, templated experiments and repeat setup, includes
+  it in JSON/HTML/PDF exports, search scoring and experiment AI context, and
+  renders it as a small metadata grid instead of a heavy extra screen.
+- Validation: Added failing API/migration coverage and static UI coverage first,
+  confirmed RED for missing metadata schema/API/UI, then made
+  `tests\experiment-metadata.test.js` and
+  `tests\experiment-entry-delete-ui.test.js` pass. Bundled Node
+  `node.exe --test` passed with 64 tests, and `git diff --check` passed.
+  Chrome and Computer Use were attempted first but rejected the WSL workspace
+  URI; headed Edge/Playwright fallback at `http://127.0.0.1:57974/` verified
+  UI creation of metadata fields, detail rendering, edit/save of an assay
+  readout, metadata search, export JSON content, mobile viewport without
+  horizontal overflow, and no relevant console/page errors.
+- Browser evidence:
+  - `C:\Users\s1732775\AppData\Local\Temp\scivox-metadata-smoke-1783510803112\metadata-create-modal-desktop.png`
+  - `C:\Users\s1732775\AppData\Local\Temp\scivox-metadata-smoke-1783510803112\metadata-detail-desktop.png`
+  - `C:\Users\s1732775\AppData\Local\Temp\scivox-metadata-smoke-1783510803112\metadata-search-desktop.png`
+  - `C:\Users\s1732775\AppData\Local\Temp\scivox-metadata-smoke-1783510803112\metadata-mobile.png`
+- Files:
+  - `TRACKING.md`
+  - `public/css/styles.css`
+  - `public/js/views/experiments.js`
+  - `src/db.js`
+  - `src/routes/ai.js`
+  - `src/routes/experiments.js`
+  - `tests/experiment-entry-delete-ui.test.js`
+  - `tests/experiment-metadata.test.js`
+
+### 2026-07-08T11:30:53Z - Add experiment entry summaries
+
+- Task: SVX-000
+- Branch: `master`
+- Reference scan: eLabFTW treats experiment entries as the core ELN record and
+  exposes structured fields/links/attachments/export around them; RSpace
+  emphasizes reusable templates and metadata consistency. This change keeps
+  summary generation source-linked instead of creating detached prose.
+- Summary: Added a `Summarise entries` action to experiment detail notebook
+  headers. The action calls the existing entry-processing API for the current
+  visible entries, shows an editable generated summary modal, supports copy,
+  and saves the generated text as a normal note with `sourceEntryIds` back to
+  the summarized entries. `/api/ai/process-entries` now works without
+  `OPENAI_API_KEY` by returning a deterministic `local-template` summary/action
+  plan from the selected entry text, and it falls back locally if a configured
+  AI request fails.
+- Validation: Added failing API/static UI coverage first, confirmed RED for the
+  offline `501` and missing experiment-summary controls, then made focused
+  `tests\ai-entry-summary-offline.test.js` and
+  `tests\experiment-entry-delete-ui.test.js` pass. Bundled Node
+  `node.exe --test` passed with 61 tests, and `git diff --check` passed. Chrome
+  and Computer Use were attempted first but rejected the WSL workspace URI;
+  headed Edge/Playwright fallback at `http://127.0.0.1:57972/` verified
+  registration, experiment creation, offline summary generation, save-as-entry
+  provenance chips, mobile viewport without horizontal overflow, and no
+  relevant console/page errors.
+- Browser evidence:
+  - `C:\Users\s1732775\AppData\Local\Temp\scivox-summary-smoke-1783510225292\summary-modal-desktop.png`
+  - `C:\Users\s1732775\AppData\Local\Temp\scivox-summary-smoke-1783510225292\summary-saved-source-links-desktop.png`
+  - `C:\Users\s1732775\AppData\Local\Temp\scivox-summary-smoke-1783510225292\summary-mobile.png`
+- Files:
+  - `TRACKING.md`
+  - `public/js/views/experiments.js`
+  - `src/routes/ai.js`
+  - `tests/ai-entry-summary-offline.test.js`
+  - `tests/experiment-entry-delete-ui.test.js`
+
+### 2026-07-08T11:16:50Z - Guard uploaded voice drafts and save state
+
+- Task: SVX-000
+- Branch: `master`
+- Summary: Added an `Upload audio` path to the experiment voice composer when
+  server STT is available, preserves uploaded audio filenames for transcription,
+  and keeps `Save entry` disabled while uploaded/recorded audio is still
+  transcribing or generating an enhanced draft. The AI voice-draft endpoint now
+  reads OpenAI configuration at request time and falls back to the local
+  lab-report draft if a configured OpenAI request fails.
+- Validation: Added failing static/API coverage first for uploaded-audio
+  transcription and configured-AI fallback, confirmed RED, then made focused
+  `tests\experiment-entry-delete-ui.test.js`,
+  `tests\textarea-autogrow-ui.test.js`, and
+  `tests\voice-draft-offline.test.js` pass. `npm test` could not run because
+  `npm` is not installed in this shell; bundled Node
+  `node.exe --test` passed with 59 tests. Chrome and Computer Use were
+  attempted first, but both connectors rejected the WSL workspace URI; headed
+  Edge/Playwright fallback verified textarea auto-grow at
+  `http://127.0.0.1:57958/` and a mocked uploaded-audio voice flow at
+  `http://127.0.0.1:57960/`. The browser pass confirmed the New Experiment
+  Objective textarea grew from 88px to 2232px, composer raw notes grew to
+  1495px on desktop and 4235px on mobile with zero horizontal overflow, and the
+  uploaded-audio `Save entry` button stayed disabled until the enhanced draft
+  was ready and saved with a source transcript chip.
+- Browser evidence:
+  - `C:\Users\s1732775\AppData\Local\Temp\scivox-autogrow-smoke-1783509271268\autogrow-modal-desktop.png`
+  - `C:\Users\s1732775\AppData\Local\Temp\scivox-autogrow-smoke-1783509271268\autogrow-composer-desktop.png`
+  - `C:\Users\s1732775\AppData\Local\Temp\scivox-autogrow-smoke-1783509271268\autogrow-composer-mobile.png`
+  - `C:\Users\s1732775\AppData\Local\Temp\scivox-voice-upload-mock-1783509399110\voice-upload-draft-ready.png`
+  - `C:\Users\s1732775\AppData\Local\Temp\scivox-voice-upload-mock-1783509399110\voice-upload-saved-source-chip.png`
+- Files:
+  - `TRACKING.md`
+  - `public/js/api.js`
+  - `public/js/views/experiments.js`
+  - `src/routes/ai.js`
+  - `tests/experiment-entry-delete-ui.test.js`
+  - `tests/voice-draft-offline.test.js`
+
+### 2026-07-08T10:39:30Z - Harden auto-expanding text boxes
+
+- Task: SVX-000
+- Branch: `master`
+- Summary: Extended textarea auto-grow recalculation to programmatic value
+  changes, not only keyboard input. Experiment templates, AI quick prompts,
+  voice draft output, source transcript updates, Observe-mode live transcript
+  updates, review text, and composer clears now call the shared auto-grow
+  helper after values are set.
+- Validation: Added failing static coverage first for programmatic textarea
+  fills, confirmed RED for the missing recalculation hooks, then made focused
+  `tests\textarea-autogrow-ui.test.js`, related static UI/tracking tests, and
+  bundled Node `--test` pass with 57 tests. Chrome and Computer Use were
+  attempted first, but both connectors rejected the WSL workspace URI; headed
+  Edge/Playwright fallback at `http://127.0.0.1:57944/` verified registration,
+  New Experiment modal typing, Objective textarea growth from 88px to 1191px,
+  saved-template programmatic fills for Protocol/Hypothesis with
+  `clientHeight === scrollHeight`, mobile recalculation to 2252px, no
+  horizontal overflow, and no relevant console errors.
+- Browser evidence:
+  - `C:\Users\s1732775\AppData\Local\Temp\scivox-autogrow-programmatic-1783507672710\autogrow-template-desktop.png`
+  - `C:\Users\s1732775\AppData\Local\Temp\scivox-autogrow-programmatic-1783507672710\autogrow-template-mobile.png`
+- Files:
+  - `TRACKING.md`
+  - `public/js/views/experiments.js`
+  - `public/js/observer.js`
+  - `tests/textarea-autogrow-ui.test.js`
+
+### 2026-07-08T10:22:58Z - Improve OCR review on real handwritten lab notes
+
+- Task: SVX-000
+- Branch: `master`
+- Reference scan: Used a real scanned handwritten lab-book page from
+  ErrantScience's paper lab-book article. The article identifies it as a scanned
+  page of the author's lab book and emphasizes dating, aims/materials,
+  chronological records, and retaining mistakes instead of erasing them.
+- Summary: Changed browser OCR to run two candidates: the existing processed
+  scan and the original scan. SciVox scores candidates by Tesseract confidence
+  and text readability, selects the cleaner output, and returns confidence,
+  quality score, selected variant, and low-confidence status. The experiment OCR
+  review UI now labels low-confidence handwriting output, shows the confidence
+  value, and recalculates auto-growing corrected/raw OCR textareas after
+  programmatic extraction.
+- Validation: Added failing OCR candidate/UI regression coverage first and
+  confirmed RED for missing `chooseOCRCandidate`. Focused
+  `tests\ocr-quality.test.js` and
+  `tests\experiment-entry-delete-ui.test.js` passed, and bundled Node `--test`
+  passed with 55 tests. Chrome and Computer Use were
+  attempted first, but both connectors rejected the WSL workspace URI; headed
+  Edge/Playwright fallback at `http://127.0.0.1:57941/` verified registration,
+  experiment creation, upload of the real handwritten lab-book scan,
+  low-confidence OCR status at 45%, corrected textarea expansion
+  (`clientHeight === scrollHeight`), mobile review without horizontal overflow,
+  corrected OCR save, and raw OCR source evidence modal.
+- Browser evidence:
+  - `C:\Users\s1732775\AppData\Local\Temp\scivox-ocr-real-repro-1783506155459\ocr-real-review.png`
+  - `C:\Users\s1732775\AppData\Local\Temp\scivox-ocr-real-repro-1783506155459\ocr-real-review-mobile.png`
+  - `C:\Users\s1732775\AppData\Local\Temp\scivox-ocr-real-repro-1783506155459\ocr-real-saved-entry.png`
+  - `C:\Users\s1732775\AppData\Local\Temp\scivox-ocr-real-repro-1783506155459\ocr-real-raw-source.png`
+- Files:
+  - `TRACKING.md`
+  - `public/js/ocr.js`
+  - `public/js/views/experiments.js`
+  - `tests/ocr-quality.test.js`
+
+### 2026-07-08T10:05:12Z - Fix mobile experiment header wrapping
+
+- Task: SVX-000
+- Branch: `master`
+- Reference scan: Browser smoke testing of the experiment page exposed a
+  scientist-facing mobile layout issue: long experiment titles could visually
+  collide with top-bar controls, making the current experiment identity hard to
+  scan during bench use.
+- Summary: Named the top-bar title block with `.top-title`, gave it
+  shrink-safe flex sizing, wrapped long title/subtitle text with
+  `overflow-wrap:anywhere`, removed the mobile spacer that competed for header
+  width, and pinned the small-phone constraint in CSS.
+- Validation: Added a failing static UI regression first and confirmed RED for
+  the missing `.top-title` contract. Focused
+  `tests\experiment-entry-delete-ui.test.js` passed. Bundled Node `--test`
+  passed with 53 tests. Chrome and Computer Use were attempted first, but both
+  connectors rejected the WSL workspace URI; headed Edge/Playwright fallback at
+  `http://127.0.0.1:57939/` verified a long experiment title on desktop and
+  mobile, no horizontal overflow, mobile subtitle hidden, title wrapping to
+  multiple lines, and no title overlap with hamburger/theme/search controls.
+- Browser evidence:
+  - `C:\Users\s1732775\AppData\Local\Temp\scivox-header-smoke-1783505084845\header-desktop.png`
+  - `C:\Users\s1732775\AppData\Local\Temp\scivox-header-smoke-1783505084845\header-mobile.png`
+- Files:
+  - `public/index.html`
+  - `public/css/styles.css`
+  - `tests/experiment-entry-delete-ui.test.js`
+  - `TRACKING.md`
+
+### 2026-07-08T09:57:24Z - Add clean voice-note drafting
+
+- Task: SVX-000
+- Branch: `master`
+- Reference scan: eLabFTW documents experiment entries as the core ELN record,
+  with optional templates at creation, rich main text for procedure/results,
+  tags/status, steps, links, attachments and export; this change keeps SciVox's
+  voice flow notebook-ready by cleaning dictated text into an editable entry
+  while preserving the raw source evidence.
+- Summary: Added `clean_voice_note` to `/api/ai/process-voice-draft`, including
+  OpenAI instruction text and deterministic local fallback cleanup for
+  punctuation, capitalization, paragraph breaks, and common lab identifiers such
+  as sample/tube IDs. The experiment composer now exposes a `Clean up` button
+  beside `Draft report`, adds `Clean note` to the format selector, and keeps
+  disabled/source-state behavior aligned with the existing raw transcript flow.
+- Validation: Added failing API/static UI coverage first and confirmed RED for
+  the missing template/button. Focused tests then passed:
+  `tests\voice-draft-offline.test.js` and
+  `tests\experiment-entry-delete-ui.test.js`. Bundled Node `--test` passed with
+  52 tests. Chrome and Computer Use were attempted first, but both connectors
+  rejected the WSL workspace URI; headed Edge/Playwright fallback at
+  `http://127.0.0.1:57938/` verified registration, experiment creation,
+  `Clean up` disabled until source text, clean-note generation, saved visible
+  voice entry, raw source modal provenance, mobile rendering without horizontal
+  overflow, and no relevant console/page errors.
+- Browser evidence:
+  - `C:\Users\s1732775\AppData\Local\Temp\scivox-cleanvoice-smoke-1783504730836\clean-review-desktop.png`
+  - `C:\Users\s1732775\AppData\Local\Temp\scivox-cleanvoice-smoke-1783504730836\clean-review-mobile.png`
+  - `C:\Users\s1732775\AppData\Local\Temp\scivox-cleanvoice-smoke-1783504730836\saved-source-modal.png`
+- Files:
+  - `src/routes/ai.js`
+  - `public/js/views/experiments.js`
+  - `tests/voice-draft-offline.test.js`
+  - `tests/experiment-entry-delete-ui.test.js`
+  - `TRACKING.md`
 
 ### 2026-07-07T16:03:45Z - Add experiment repeat setup
 

@@ -5,13 +5,83 @@ export async function runOCR(imageSource, onProgress) {
   if (!window.Tesseract) throw new Error('OCR engine still loading — try again in a moment');
   if (onProgress) onProgress(1, 'preprocessing image');
   const processedDataUrl = await preprocessForOCR(imageSource);
-  const res = await window.Tesseract.recognize(processedDataUrl, 'eng', {
+  const candidates = [
+    await recognizeOCRCandidate(processedDataUrl, 'processed', onProgress, 2, 48),
+    await recognizeOCRCandidate(imageSource, 'original', onProgress, 52, 48)
+  ];
+  const best = chooseOCRCandidate(candidates);
+  return {
+    text: best.text,
+    processedDataUrl,
+    confidence: best.confidence,
+    qualityScore: best.qualityScore,
+    variant: best.variant,
+    needsReview: ocrNeedsReview(best),
+    candidates: candidates.map(c => ({
+      variant: c.variant,
+      confidence: c.confidence,
+      qualityScore: c.qualityScore,
+      length: c.text.length
+    }))
+  };
+}
+
+async function recognizeOCRCandidate(imageSource, variant, onProgress, offset, span) {
+  const res = await window.Tesseract.recognize(imageSource, 'eng', {
     tessedit_pageseg_mode: '6',
     preserve_interword_spaces: '1',
     user_defined_dpi: '300',
-    logger: m => { if (m.status === 'recognizing text' && onProgress) onProgress(Math.round(m.progress * 100)); }
+    logger: m => {
+      if (m.status === 'recognizing text' && onProgress) {
+        onProgress(Math.min(99, Math.round(offset + m.progress * span)));
+      }
+    }
   });
-  return { text: cleanOCRText(res.data.text || ''), processedDataUrl };
+  const candidate = {
+    variant,
+    text: cleanOCRText(res.data.text || ''),
+    confidence: Math.round(Number(res.data.confidence || 0))
+  };
+  candidate.qualityScore = scoreOCRCandidate(candidate);
+  return candidate;
+}
+
+export function chooseOCRCandidate(candidates) {
+  return (candidates || [])
+    .map(candidate => ({ ...candidate, qualityScore: scoreOCRCandidate(candidate) }))
+    .sort((a, b) => b.qualityScore - a.qualityScore)[0] || {
+      variant: 'none',
+      text: '',
+      confidence: 0,
+      qualityScore: -1000
+    };
+}
+
+export function ocrNeedsReview(candidate) {
+  if (!candidate?.text?.trim()) return true;
+  return Number(candidate.confidence || 0) < 55 || scoreOCRCandidate(candidate) < 55;
+}
+
+export function scoreOCRCandidate(candidate) {
+  const text = cleanOCRText(candidate?.text || '');
+  const compact = text.replace(/\s/g, '');
+  if (!compact) return -1000;
+  const confidence = Math.max(0, Math.min(100, Number(candidate?.confidence || 0)));
+  const words = text.match(/[A-Za-z][A-Za-z0-9µ.-]{2,}/g) || [];
+  const lowercaseWords = words.filter(w => /[a-z]/.test(w)).length;
+  const uppercaseRuns = words.filter(w => /^[A-Z]{3,}$/.test(w)).length;
+  const labTerms = (text.match(/\b(sample|vial|tube|buffer|incubat\w*|wash\w*|weigh\w*|spread|compress\w*|trough|acid|water|hour|minute|ph|ml|ul|µl)\b/gi) || []).length;
+  const alnum = (compact.match(/[A-Za-z0-9]/g) || []).length;
+  const alnumRatio = alnum / compact.length;
+  const noiseLines = text.split(/\n/).filter(isNoiseLine).length;
+  return Math.round(
+    confidence +
+    Math.min(25, lowercaseWords * 2) +
+    Math.min(20, labTerms * 5) +
+    Math.min(10, alnumRatio * 10) -
+    uppercaseRuns * 4 -
+    noiseLines * 8
+  );
 }
 
 export function fileToDataURL(file) {
@@ -23,7 +93,7 @@ export function fileToDataURL(file) {
   });
 }
 
-export const cameraSupported = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+export const cameraSupported = !!(globalThis.navigator?.mediaDevices && navigator.mediaDevices.getUserMedia);
 
 /** Start the camera into a <video>. facingMode 'environment' = rear (phones). */
 export async function startCamera(videoEl, facingMode = 'environment') {

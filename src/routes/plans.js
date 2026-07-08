@@ -53,6 +53,7 @@ r.post('/:id/start', (req, res) => {
   let exp;
   if (p.experiment_id && Experiments.get(p.experiment_id, req.user)) {
     exp = Experiments.get(p.experiment_id, req.user);
+    if (exp.archived_at) return res.status(409).json({ error: 'Experiment is archived (read-only). Restore it before starting this plan.' });
   } else {
     exp = Experiments.create({
       title: p.title,

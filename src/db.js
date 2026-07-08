@@ -28,10 +28,12 @@ const now = () => new Date().toISOString();
 const id = () => randomUUID();
 const DEFAULT_ORG_SLUG = 'default';
 const DEFAULT_PROJECT_SLUG = 'general-r-and-d';
+const ELN_ID_PREFIX = 'SVX';
 export const HIDDEN_ENTRY_TYPES = new Set(['voice_transcript', 'ocr_raw_text']);
 
 export const PROJECT_ROLES = { viewer: 1, scientist: 2, reviewer: 3, owner: 4 };
 export const OUTCOME_STATUSES = new Set(['running', 'needs_redo', 'success', 'fail', 'inconclusive']);
+const METADATA_FIELD_TYPES = new Set(['text', 'number', 'date', 'time', 'datetime-local', 'url', 'email', 'select', 'radio', 'checkbox']);
 
 /** SHA-256 content fingerprint for entries, signatures, exports and audit rows. */
 export function fingerprint(value) {
@@ -67,13 +69,131 @@ function cleanEntryIds(values) {
   return Array.from(new Set((Array.isArray(values) ? values : []).map(String).filter(Boolean))).slice(0, 40);
 }
 
+function attachRevisionCounts(entries) {
+  if (!Array.isArray(entries) || !entries.length) return entries;
+  const ids = entries.map(en => en.id).filter(Boolean);
+  if (!ids.length) return entries;
+  const rows = db.prepare(`SELECT entry_id, COUNT(*) AS count
+    FROM entry_revisions
+    WHERE entry_id IN (${placeholders(ids)})
+    GROUP BY entry_id`).all(...ids);
+  const counts = new Map(rows.map(row => [row.entry_id, Number(row.count) || 0]));
+  for (const entry of entries) entry.revision_count = counts.get(entry.id) || 0;
+  return entries;
+}
+
+function withRevisionCount(entry) {
+  if (!entry) return entry;
+  const row = db.prepare('SELECT COUNT(*) AS count FROM entry_revisions WHERE entry_id=?').get(entry.id);
+  return { ...entry, revision_count: Number(row?.count) || 0 };
+}
+
 export function isHiddenEntryType(type) {
   return HIDDEN_ENTRY_TYPES.has(String(type || ''));
+}
+
+function cleanMetadata(value = {}) {
+  return JSON.stringify(normalizeMetadata(value));
+}
+
+function normalizeMetadata(value = {}) {
+  let parsed = value;
+  if (typeof parsed === 'string') {
+    const trimmed = parsed.trim();
+    if (!trimmed) return { extra_fields: {} };
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch {
+      throw new Error('Invalid metadata JSON');
+    }
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { extra_fields: {} };
+  const sourceFields = parsed.extra_fields && typeof parsed.extra_fields === 'object' && !Array.isArray(parsed.extra_fields)
+    ? parsed.extra_fields
+    : parsed;
+  const extra_fields = {};
+  let index = 1;
+  for (const [rawName, rawField] of Object.entries(sourceFields)) {
+    const name = String(rawName || '').trim().slice(0, 80);
+    if (!name) continue;
+    const field = rawField && typeof rawField === 'object' && !Array.isArray(rawField)
+      ? rawField
+      : { value: rawField };
+    const type = METADATA_FIELD_TYPES.has(String(field.type || '').trim()) ? String(field.type).trim() : inferMetadataType(field.value);
+    const normalizedField = {
+      type,
+      value: String(field.value ?? '').slice(0, 2000)
+    };
+    if (field.unit != null && String(field.unit).trim()) normalizedField.unit = String(field.unit).trim().slice(0, 40);
+    if (field.description != null && String(field.description).trim()) normalizedField.description = String(field.description).trim().slice(0, 240);
+    if (field.required === true) normalizedField.required = true;
+    const position = Number(field.position);
+    normalizedField.position = Number.isFinite(position) ? position : index;
+    extra_fields[name] = normalizedField;
+    index += 1;
+  }
+  return { extra_fields };
+}
+
+function inferMetadataType(value) {
+  const text = String(value ?? '').trim();
+  if (!text) return 'text';
+  if (/^-?\d+(?:\.\d+)?$/.test(text)) return 'number';
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return 'date';
+  if (/^https?:\/\//i.test(text)) return 'url';
+  return 'text';
+}
+
+function parseMetadata(value) {
+  try {
+    return normalizeMetadata(value);
+  } catch {
+    return { extra_fields: {} };
+  }
+}
+
+function hydrateMetadata(row) {
+  return row ? { ...row, metadata: parseMetadata(row.metadata) } : row;
+}
+
+function metadataSearchText(metadata) {
+  const parsed = parseMetadata(metadata);
+  return Object.entries(parsed.extra_fields || {})
+    .map(([name, field]) => [name, field?.value, field?.unit, field?.description].filter(Boolean).join(' '))
+    .join(' ');
 }
 
 function cleanOutcomeStatus(value) {
   const status = String(value || '').trim().toLowerCase();
   return OUTCOME_STATUSES.has(status) ? status : 'running';
+}
+
+function dateStamp(value) {
+  const d = value ? new Date(value) : new Date();
+  const iso = Number.isNaN(d.getTime()) ? now() : d.toISOString();
+  return iso.slice(0, 10).replace(/-/g, '');
+}
+
+function nextExperimentElnId(createdAt = now()) {
+  const prefix = `${ELN_ID_PREFIX}-${dateStamp(createdAt)}-`;
+  const rows = db.prepare('SELECT eln_id FROM experiments WHERE eln_id LIKE ?').all(`${prefix}%`);
+  let max = 0;
+  for (const row of rows) {
+    const match = String(row.eln_id || '').match(/-(\d+)$/);
+    if (match) max = Math.max(max, Number(match[1]) || 0);
+  }
+  for (let seq = max + 1; ; seq += 1) {
+    const candidate = `${prefix}${String(seq).padStart(4, '0')}`;
+    if (!db.prepare('SELECT 1 FROM experiments WHERE eln_id=?').get(candidate)) return candidate;
+  }
+}
+
+function backfillExperimentElnIds() {
+  if (!hasColumn('experiments', 'eln_id')) return;
+  const rows = db.prepare("SELECT rowid, id, created_at FROM experiments WHERE eln_id IS NULL OR eln_id = '' ORDER BY created_at ASC, rowid ASC").all();
+  for (const row of rows) {
+    db.prepare('UPDATE experiments SET eln_id=? WHERE id=?').run(nextExperimentElnId(row.created_at), row.id);
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -156,6 +276,7 @@ export function migrate() {
 
     CREATE TABLE IF NOT EXISTS experiments (
       id          TEXT PRIMARY KEY,
+      eln_id      TEXT,
       project_id  TEXT REFERENCES projects(id) ON DELETE SET NULL,
       title       TEXT NOT NULL,
       project     TEXT DEFAULT '',
@@ -167,8 +288,11 @@ export function migrate() {
       success_criteria TEXT DEFAULT '',
       safety_notes TEXT DEFAULT '',
       tags        TEXT DEFAULT '',
+      metadata    TEXT DEFAULT '{}',
       outcome_status TEXT NOT NULL DEFAULT 'running',
       outcome_summary TEXT DEFAULT '',
+      archived_at TEXT,
+      archived_by TEXT,
       created_at  TEXT NOT NULL,
       updated_at  TEXT NOT NULL
     );
@@ -184,6 +308,7 @@ export function migrate() {
       materials   TEXT DEFAULT '',
       success_criteria TEXT DEFAULT '',
       safety_notes TEXT DEFAULT '',
+      metadata    TEXT DEFAULT '{}',
       created_by  TEXT DEFAULT '',
       created_at  TEXT NOT NULL,
       updated_at  TEXT NOT NULL
@@ -214,6 +339,21 @@ export function migrate() {
       updated_at        TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_entries_exp ON entries(experiment_id);
+
+    CREATE TABLE IF NOT EXISTS entry_revisions (
+      id                  TEXT PRIMARY KEY,
+      entry_id            TEXT NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
+      experiment_id       TEXT NOT NULL REFERENCES experiments(id) ON DELETE CASCADE,
+      revision_no         INTEGER NOT NULL,
+      previous_text       TEXT NOT NULL,
+      previous_hash       TEXT NOT NULL,
+      previous_updated_at TEXT NOT NULL,
+      edited_by           TEXT DEFAULT '',
+      edited_role         TEXT DEFAULT '',
+      created_at          TEXT NOT NULL,
+      UNIQUE(entry_id, revision_no)
+    );
+    CREATE INDEX IF NOT EXISTS idx_entry_revisions_entry ON entry_revisions(entry_id, revision_no DESC);
 
     CREATE TABLE IF NOT EXISTS entry_comments (
       id         TEXT PRIMARY KEY,
@@ -368,6 +508,7 @@ export function migrate() {
   addColumn('users', 'email_verified_at', 'TEXT');
   addColumn('users', 'archived_at', 'TEXT');
   addColumn('users', 'archived_by', 'TEXT');
+  addColumn('experiments', 'eln_id', "TEXT DEFAULT ''");
   addColumn('experiments', 'project_id', 'TEXT');
   addColumn('experiments', 'hypothesis', "TEXT DEFAULT ''");
   addColumn('experiments', 'protocol', "TEXT DEFAULT ''");
@@ -375,8 +516,12 @@ export function migrate() {
   addColumn('experiments', 'success_criteria', "TEXT DEFAULT ''");
   addColumn('experiments', 'safety_notes', "TEXT DEFAULT ''");
   addColumn('experiments', 'tags', "TEXT DEFAULT ''");
+  addColumn('experiments', 'metadata', "TEXT DEFAULT '{}'");
   addColumn('experiments', 'outcome_status', "TEXT NOT NULL DEFAULT 'running'");
   addColumn('experiments', 'outcome_summary', "TEXT DEFAULT ''");
+  addColumn('experiments', 'archived_at', 'TEXT');
+  addColumn('experiments', 'archived_by', 'TEXT');
+  addColumn('experiment_templates', 'metadata', "TEXT DEFAULT '{}'");
   addColumn('entries', 'signature_meaning', 'TEXT');
   addColumn('entries', 'deleted_at', 'TEXT');
   addColumn('entries', 'deleted_by', 'TEXT');
@@ -390,6 +535,8 @@ export function migrate() {
   addColumn('audit', 'previous_hash', "TEXT DEFAULT ''");
   addColumn('audit', 'hash', "TEXT DEFAULT ''");
   db.exec('CREATE INDEX IF NOT EXISTS idx_audit_project ON audit(project_id);');
+  backfillExperimentElnIds();
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_experiments_eln_id ON experiments(eln_id) WHERE eln_id IS NOT NULL AND eln_id != '';");
 
   ensureDefaultWorkspace();
   backfillLegacyHashes();
@@ -690,7 +837,12 @@ export const Audit = {
 /* ------------------------------------------------------------------ */
 function withProjectRows(base, user, order = 'e.created_at DESC') {
   const select = `SELECT e.*, p.name AS project_name, p.org_id AS org_id, o.name AS org_name,
-    (SELECT COUNT(*) FROM entries en WHERE en.experiment_id=e.id AND en.deleted_at IS NULL AND en.type NOT IN ('voice_transcript','ocr_raw_text')) AS entryCount
+    (SELECT COUNT(*) FROM entries en WHERE en.experiment_id=e.id AND en.deleted_at IS NULL AND en.type NOT IN ('voice_transcript','ocr_raw_text')) AS entryCount,
+    (SELECT COUNT(*) FROM experiment_steps s WHERE s.experiment_id=e.id AND s.deleted_at IS NULL) AS stepCount,
+    (SELECT COUNT(*) FROM experiment_steps s WHERE s.experiment_id=e.id AND s.deleted_at IS NULL AND COALESCE(s.done,0)=0) AS openStepCount,
+    (SELECT COUNT(*) FROM experiment_steps s WHERE s.experiment_id=e.id AND s.deleted_at IS NULL AND COALESCE(s.done,0)=1) AS completedStepCount,
+    (SELECT s.id FROM experiment_steps s WHERE s.experiment_id=e.id AND s.deleted_at IS NULL AND COALESCE(s.done,0)=0 ORDER BY s.position ASC, s.created_at ASC LIMIT 1) AS next_step_id,
+    (SELECT s.text FROM experiment_steps s WHERE s.experiment_id=e.id AND s.deleted_at IS NULL AND COALESCE(s.done,0)=0 ORDER BY s.position ASC, s.created_at ASC LIMIT 1) AS next_step
     FROM experiments e LEFT JOIN projects p ON p.id=e.project_id LEFT JOIN orgs o ON o.id=p.org_id`;
   if (user?.role === 'admin') return db.prepare(`${select} ${base} ORDER BY ${order}`).all();
   const ids = Projects.idsForUser(user);
@@ -715,7 +867,7 @@ export const ExperimentTemplates = {
       args.push(...ids);
     }
     const sql = `${select}${where.length ? ' WHERE ' + where.join(' AND ') : ''} ORDER BY p.name COLLATE NOCASE, t.name COLLATE NOCASE`;
-    return db.prepare(sql).all(...args);
+    return db.prepare(sql).all(...args).map(hydrateMetadata);
   },
   get(templateId, user = null) {
     const row = db.prepare(`SELECT t.*, p.name AS project_name, o.name AS org_name
@@ -725,14 +877,15 @@ export const ExperimentTemplates = {
       WHERE t.id=?`).get(templateId);
     if (!row) return null;
     if (user && !Projects.canAccessProject(user, row.project_id, 'viewer')) return null;
-    return row;
+    return hydrateMetadata(row);
   },
   create(data = {}) {
     const _id = id(), t = now();
     const projectId = data.project_id || Projects.defaultProjectId();
+    const metadata = cleanMetadata(data.metadata);
     db.prepare(`INSERT INTO experiment_templates
-      (id,project_id,name,description,objective,hypothesis,protocol,materials,success_criteria,safety_notes,created_by,created_at,updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      (id,project_id,name,description,objective,hypothesis,protocol,materials,success_criteria,safety_notes,metadata,created_by,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
       .run(
         _id,
         projectId,
@@ -744,6 +897,7 @@ export const ExperimentTemplates = {
         data.materials || '',
         data.success_criteria || '',
         data.safety_notes || '',
+        metadata,
         data.created_by || '',
         t,
         t
@@ -761,14 +915,16 @@ export const ExperimentTemplates = {
       materials: exp.materials || '',
       success_criteria: exp.success_criteria || '',
       safety_notes: exp.safety_notes || '',
+      metadata: exp.metadata || {},
       created_by: createdBy
     });
   }
 };
 
 export const Experiments = {
-  list(user = null) {
-    return withProjectRows('', user).map(row => ({ ...row, access: Projects.accessFor(user, row.project_id) }));
+  list(user = null, { includeArchived = false } = {}) {
+    const base = includeArchived ? '' : 'WHERE e.archived_at IS NULL';
+    return withProjectRows(base, user).map(row => ({ ...hydrateMetadata(row), access: Projects.accessFor(user, row.project_id) }));
   },
   get(expId, user = null) {
     const exp = db.prepare(`SELECT e.*, p.name AS project_name, o.name AS org_name
@@ -778,23 +934,26 @@ export const Experiments = {
     if (user && !Projects.canAccessProject(user, exp.project_id, 'viewer')) return null;
     exp.access = Projects.accessFor(user, exp.project_id);
     exp.entries = db.prepare('SELECT * FROM entries WHERE experiment_id = ? AND deleted_at IS NULL ORDER BY created_at ASC').all(expId);
+    attachRevisionCounts(exp.entries);
     attachEntryComments(exp.entries);
-    return exp;
+    return hydrateMetadata(exp);
   },
   create({
     title, project = '', objective = '', status = 'active', project_id = null,
     hypothesis = '', protocol = '', materials = '', success_criteria = '', safety_notes = '', tags = '',
-    outcome_status = 'running', outcome_summary = ''
+    metadata = {}, outcome_status = 'running', outcome_summary = ''
   }) {
     const _id = id(), t = now();
+    const elnId = nextExperimentElnId(t);
     const projectId = project_id || Projects.defaultProjectId();
     const projectName = project || Projects.get(projectId)?.name || '';
+    const cleanMeta = cleanMetadata(metadata);
     db.prepare(`INSERT INTO experiments
-      (id,project_id,title,project,status,objective,hypothesis,protocol,materials,success_criteria,safety_notes,tags,outcome_status,outcome_summary,created_at,updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      (id,eln_id,project_id,title,project,status,objective,hypothesis,protocol,materials,success_criteria,safety_notes,tags,metadata,outcome_status,outcome_summary,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
       .run(
-        _id, projectId, title, projectName, status, objective, hypothesis, protocol, materials,
-        success_criteria, safety_notes, tags, cleanOutcomeStatus(outcome_status), outcome_summary || '', t, t
+        _id, elnId, projectId, title, projectName, status, objective, hypothesis, protocol, materials,
+        success_criteria, safety_notes, tags, cleanMeta, cleanOutcomeStatus(outcome_status), outcome_summary || '', t, t
       );
     return this.get(_id);
   },
@@ -817,6 +976,7 @@ export const Experiments = {
         success_criteria: source.success_criteria || '',
         safety_notes: source.safety_notes || '',
         tags: source.tags || '',
+        metadata: source.metadata || {},
         outcome_status: 'running',
         outcome_summary: ''
       });
@@ -845,18 +1005,35 @@ export const Experiments = {
       ...fields,
       outcome_status: fields.outcome_status !== undefined ? cleanOutcomeStatus(fields.outcome_status) : cleanOutcomeStatus(exp.outcome_status),
       outcome_summary: fields.outcome_summary !== undefined ? String(fields.outcome_summary || '') : (exp.outcome_summary || ''),
+      metadata: fields.metadata !== undefined ? cleanMetadata(fields.metadata) : (exp.metadata || '{}'),
       project_id: nextProjectId,
       project: nextProjectName,
       updated_at: now()
     };
     db.prepare(`UPDATE experiments SET
-      project_id=?,title=?,project=?,status=?,objective=?,hypothesis=?,protocol=?,materials=?,success_criteria=?,safety_notes=?,tags=?,outcome_status=?,outcome_summary=?,updated_at=?
+      project_id=?,title=?,project=?,status=?,objective=?,hypothesis=?,protocol=?,materials=?,success_criteria=?,safety_notes=?,tags=?,metadata=?,outcome_status=?,outcome_summary=?,updated_at=?
       WHERE id=?`)
       .run(
         next.project_id, next.title, next.project, next.status, next.objective,
         next.hypothesis, next.protocol, next.materials, next.success_criteria, next.safety_notes,
-        next.tags, next.outcome_status, next.outcome_summary, next.updated_at, expId
+        next.tags, next.metadata, next.outcome_status, next.outcome_summary, next.updated_at, expId
       );
+    return this.get(expId);
+  },
+  archive(expId, { by = 'Unknown' } = {}) {
+    const exp = db.prepare('SELECT * FROM experiments WHERE id = ?').get(expId);
+    if (!exp) return null;
+    if (exp.archived_at) return this.get(expId);
+    const t = now();
+    db.prepare('UPDATE experiments SET archived_at=?, archived_by=?, updated_at=? WHERE id=?').run(t, by, t, expId);
+    return this.get(expId);
+  },
+  restore(expId) {
+    const exp = db.prepare('SELECT * FROM experiments WHERE id = ?').get(expId);
+    if (!exp) return null;
+    if (!exp.archived_at) return this.get(expId);
+    const t = now();
+    db.prepare('UPDATE experiments SET archived_at=NULL, archived_by=NULL, updated_at=? WHERE id=?').run(t, expId);
     return this.get(expId);
   },
   remove(expId) {
@@ -876,7 +1053,7 @@ export const Entries = {
       JOIN experiments e ON e.id=en.experiment_id
       LEFT JOIN projects p ON p.id=e.project_id
       LEFT JOIN orgs o ON o.id=p.org_id
-      WHERE en.deleted_at IS NULL AND en.type NOT IN ('voice_transcript','ocr_raw_text')`;
+      WHERE en.deleted_at IS NULL AND e.archived_at IS NULL AND en.type NOT IN ('voice_transcript','ocr_raw_text')`;
     if (user?.role === 'admin') return db.prepare(`${select} ORDER BY en.created_at DESC`).all();
     const ids = Projects.idsForUser(user);
     if (!ids.length) return [];
@@ -907,10 +1084,11 @@ export const Entries = {
     return db.prepare('SELECT * FROM entries WHERE id = ?').get(_id);
   },
   get(entryId) {
-    return db.prepare('SELECT * FROM entries WHERE id = ?').get(entryId);
+    return withRevisionCount(db.prepare('SELECT * FROM entries WHERE id = ?').get(entryId));
   },
   getDetailed(entryId, user = null) {
     const row = db.prepare(`SELECT en.*, e.title AS experiment_title, e.status AS experiment_status,
+      e.archived_at AS experiment_archived_at,
       e.objective AS experiment_objective, e.project_id, p.name AS project_name, o.name AS org_name
       FROM entries en
       JOIN experiments e ON e.id=en.experiment_id
@@ -919,12 +1097,13 @@ export const Entries = {
       WHERE en.id=? AND en.deleted_at IS NULL`).get(entryId);
     if (!row) return null;
     if (user && !Projects.canAccessProject(user, row.project_id, 'viewer')) return null;
-    return row;
+    return withRevisionCount(row);
   },
   getManyDetailed(entryIds, user = null) {
     const ids = Array.from(new Set((entryIds || []).map(String).filter(Boolean))).slice(0, 40);
     if (!ids.length) return [];
     const rows = db.prepare(`SELECT en.*, e.title AS experiment_title, e.status AS experiment_status,
+      e.archived_at AS experiment_archived_at,
       e.objective AS experiment_objective, e.project_id, p.name AS project_name, o.name AS org_name
       FROM entries en
       JOIN experiments e ON e.id=en.experiment_id
@@ -934,9 +1113,10 @@ export const Entries = {
       ORDER BY en.created_at ASC`).all(...ids);
     return user ? rows.filter(row => Projects.canAccessProject(user, row.project_id, 'viewer')) : rows;
   },
-  update(entryId, { text }) {
+  update(entryId, { text }, { editedBy = '', editedRole = '' } = {}) {
     const en = this.get(entryId);
     if (!en || en.deleted_at) return en || null;
+    if (String(text) === String(en.text)) return withRevisionCount(en);
     const t = now();
     const fp = fingerprint(JSON.stringify({
       experiment_id: en.experiment_id,
@@ -949,9 +1129,34 @@ export const Entries = {
       created_at: en.created_at,
       updated_at: t
     }));
-    db.prepare('UPDATE entries SET text=?, hash=?, updated_at=? WHERE id=?').run(text, fp, t, entryId);
-    db.prepare('UPDATE experiments SET updated_at=? WHERE id=?').run(t, en.experiment_id);
+    db.exec('BEGIN');
+    try {
+      const nextRevision = Number(db.prepare('SELECT COALESCE(MAX(revision_no), 0) + 1 AS revision_no FROM entry_revisions WHERE entry_id=?').get(entryId)?.revision_no) || 1;
+      db.prepare(`INSERT INTO entry_revisions
+        (id,entry_id,experiment_id,revision_no,previous_text,previous_hash,previous_updated_at,edited_by,edited_role,created_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?)`)
+        .run(id(), entryId, en.experiment_id, nextRevision, en.text, en.hash, en.updated_at || en.created_at, editedBy, editedRole, t);
+      db.prepare('UPDATE entries SET text=?, hash=?, updated_at=? WHERE id=?').run(text, fp, t, entryId);
+      db.prepare('UPDATE experiments SET updated_at=? WHERE id=?').run(t, en.experiment_id);
+      db.exec('COMMIT');
+    } catch (err) {
+      db.exec('ROLLBACK');
+      throw err;
+    }
     return this.get(entryId);
+  },
+  revisions(entryId, user = null) {
+    const en = this.getDetailed(entryId, user);
+    if (!en) return null;
+    return db.prepare('SELECT * FROM entry_revisions WHERE entry_id=? ORDER BY revision_no DESC').all(entryId);
+  },
+  revisionsForExperiment(expId) {
+    const rows = db.prepare('SELECT * FROM entry_revisions WHERE experiment_id=? ORDER BY entry_id ASC, revision_no DESC').all(expId);
+    return rows.reduce((acc, row) => {
+      if (!acc[row.entry_id]) acc[row.entry_id] = [];
+      acc[row.entry_id].push(row);
+      return acc;
+    }, {});
   },
   sign(entryId, { by, role, meaning = 'author' }) {
     const en = this.get(entryId);
@@ -1353,31 +1558,31 @@ export const Search = {
     const expRows = Experiments.list(user);
     const experiments = expRows
       .map(e => ({ ...e, score: scoreText([
-        e.title, e.project_name, e.project, e.objective, e.tags, e.outcome_status, e.outcome_summary
+        e.eln_id, e.title, e.project_name, e.project, e.objective, e.tags, e.outcome_status, e.outcome_summary, metadataSearchText(e.metadata)
       ].join(' '), terms, { title: e.title }) }))
       .filter(e => e.score > 0)
       .sort((a, b) => b.score - a.score)
       .slice(0, 12);
 
     const ids = Projects.idsForUser(user);
-    if (!ids.length) return { query: q, experiments, entries: [], references: [] };
-    const expFilter = user?.role === 'admin' ? '' : `WHERE e.project_id IN (${placeholders(ids)})`;
+    if (user?.role !== 'admin' && !ids.length) return { query: q, experiments, entries: [], references: [] };
+    const accessWhere = user?.role === 'admin' ? [] : [`e.project_id IN (${placeholders(ids)})`];
     const args = user?.role === 'admin' ? [] : ids;
 
-    const entryRows = db.prepare(`SELECT en.*, e.title AS experiment_title, e.project_id, p.name AS project_name
+    const entryRows = db.prepare(`SELECT en.*, e.eln_id, e.title AS experiment_title, e.project_id, p.name AS project_name
       FROM entries en JOIN experiments e ON e.id=en.experiment_id LEFT JOIN projects p ON p.id=e.project_id
-      ${expFilter ? expFilter + ' AND' : 'WHERE'} en.deleted_at IS NULL AND en.type NOT IN ('voice_transcript','ocr_raw_text')`).all(...args);
+      WHERE ${[...accessWhere, 'e.archived_at IS NULL', 'en.deleted_at IS NULL', "en.type NOT IN ('voice_transcript','ocr_raw_text')"].join(' AND ')}`).all(...args);
     const entries = entryRows
-      .map(en => ({ ...en, score: scoreText([en.experiment_title, en.project_name, en.type, en.text].join(' '), terms, { title: en.experiment_title }) }))
+      .map(en => ({ ...en, score: scoreText([en.eln_id, en.experiment_title, en.project_name, en.type, en.text].join(' '), terms, { title: en.experiment_title }) }))
       .filter(en => en.score > 0)
       .sort((a, b) => b.score - a.score)
       .slice(0, 20);
 
-    const refRows = db.prepare(`SELECT r.*, e.title AS experiment_title, e.project_id, p.name AS project_name
+    const refRows = db.prepare(`SELECT r.*, e.eln_id, e.title AS experiment_title, e.project_id, p.name AS project_name
       FROM paper_refs r JOIN experiments e ON e.id=r.experiment_id LEFT JOIN projects p ON p.id=e.project_id
-      ${expFilter}`).all(...args);
+      WHERE ${[...accessWhere, 'e.archived_at IS NULL'].join(' AND ')}`).all(...args);
     const references = refRows
-      .map(r => ({ ...r, score: scoreText([r.title, r.authors, r.year, r.doi, r.experiment_title, r.project_name].join(' '), terms, { title: r.title }) }))
+      .map(r => ({ ...r, score: scoreText([r.eln_id, r.title, r.authors, r.year, r.doi, r.experiment_title, r.project_name].join(' '), terms, { title: r.title }) }))
       .filter(r => r.score > 0)
       .sort((a, b) => b.score - a.score)
       .slice(0, 20);

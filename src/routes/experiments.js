@@ -29,7 +29,7 @@ const attachmentUpload = multer({
 
 const r = Router();
 
-r.get('/', (req, res) => res.json(Experiments.list(req.user)));
+r.get('/', (req, res) => res.json(Experiments.list(req.user, { includeArchived: req.query.includeArchived === 'true' })));
 
 r.get('/templates', (req, res) => {
   res.json(ExperimentTemplates.list(req.user, { projectId: req.query.projectId || '' }));
@@ -51,7 +51,12 @@ r.post('/', (req, res) => {
   if (req.body?.template_id && !template) return res.status(404).json({ error: 'Experiment template not found' });
   if (template && template.project_id !== projectId) return res.status(400).json({ error: 'Experiment template belongs to a different project' });
   const payload = template ? applyTemplateDefaults(req.body, template) : req.body;
-  const exp = Experiments.create(payload);
+  let exp;
+  try {
+    exp = Experiments.create(payload);
+  } catch (err) {
+    return res.status(400).json({ error: err.message || 'Invalid experiment data' });
+  }
   Audit.log(
     req.user.name,
     req.user.role,
@@ -66,6 +71,7 @@ r.post('/:id/template', (req, res) => {
   const exp = Experiments.get(req.params.id, req.user);
   if (!exp) return res.status(404).json({ error: 'Experiment not found' });
   if (!Projects.canAccessProject(req.user, exp.project_id, 'scientist')) return res.status(403).json({ error: 'Project write access required' });
+  if (archivedReadOnly(exp, res)) return;
   const name = String(req.body?.name || '').trim() || `${exp.title} template`;
   const description = String(req.body?.description || '').trim();
   const template = ExperimentTemplates.createFromExperiment(exp, { name, description, createdBy: req.user.name });
@@ -82,6 +88,7 @@ r.post('/:id/template', (req, res) => {
 r.post('/:id/duplicate', (req, res) => {
   const exp = Experiments.get(req.params.id, req.user);
   if (!exp) return res.status(404).json({ error: 'Experiment not found' });
+  if (archivedReadOnly(exp, res)) return;
   const projectId = String(req.body?.project_id || exp.project_id || '').trim();
   if (!Projects.get(projectId)) return res.status(404).json({ error: 'Project not found' });
   if (!Projects.canAccessProject(req.user, projectId, 'scientist')) return res.status(403).json({ error: 'Project write access required' });
@@ -101,6 +108,24 @@ r.post('/:id/duplicate', (req, res) => {
   res.status(201).json(publicExperiment(Experiments.get(result.experiment.id, req.user) || result.experiment));
 });
 
+r.post('/:id/archive', (req, res) => {
+  const exp = Experiments.get(req.params.id, req.user);
+  if (!exp) return res.status(404).json({ error: 'Experiment not found' });
+  if (!Projects.canAccessProject(req.user, exp.project_id, 'scientist')) return res.status(403).json({ error: 'Project write access required' });
+  const archived = Experiments.archive(exp.id, { by: req.user.name });
+  Audit.log(req.user.name, req.user.role, 'ARCHIVE_EXPERIMENT', `"${archived.title}" (${archived.id})`, { projectId: archived.project_id });
+  res.json(publicExperiment(archived));
+});
+
+r.post('/:id/restore', (req, res) => {
+  const exp = Experiments.get(req.params.id, req.user);
+  if (!exp) return res.status(404).json({ error: 'Experiment not found' });
+  if (!Projects.canAccessProject(req.user, exp.project_id, 'scientist')) return res.status(403).json({ error: 'Project write access required' });
+  const restored = Experiments.restore(exp.id);
+  Audit.log(req.user.name, req.user.role, 'RESTORE_EXPERIMENT', `"${restored.title}" (${restored.id})`, { projectId: restored.project_id });
+  res.json(publicExperiment(restored));
+});
+
 r.get('/:id/links', (req, res) => {
   const exp = Experiments.get(req.params.id, req.user);
   if (!exp) return res.status(404).json({ error: 'Experiment not found' });
@@ -111,6 +136,7 @@ r.post('/:id/links', (req, res) => {
   const exp = Experiments.get(req.params.id, req.user);
   if (!exp) return res.status(404).json({ error: 'Experiment not found' });
   if (!Projects.canAccessProject(req.user, exp.project_id, 'scientist')) return res.status(403).json({ error: 'Project write access required' });
+  if (archivedReadOnly(exp, res)) return;
   if (exp.status === 'locked') return res.status(409).json({ error: 'Experiment is locked (read-only)' });
 
   const linkedExperimentId = String(req.body?.linkedExperimentId || req.body?.linked_experiment_id || '').trim();
@@ -145,6 +171,7 @@ r.delete('/:id/links/:linkId', (req, res) => {
   const exp = Experiments.get(req.params.id, req.user);
   if (!exp) return res.status(404).json({ error: 'Experiment not found' });
   if (!Projects.canAccessProject(req.user, exp.project_id, 'scientist')) return res.status(403).json({ error: 'Project write access required' });
+  if (archivedReadOnly(exp, res)) return;
   if (exp.status === 'locked') return res.status(409).json({ error: 'Experiment is locked (read-only)' });
 
   const link = ExperimentLinks.get(req.params.linkId, req.user);
@@ -261,6 +288,7 @@ r.delete('/:id/attachments/:attachmentId', (req, res) => {
   const exp = Experiments.get(req.params.id, req.user);
   if (!exp) return res.status(404).json({ error: 'Experiment not found' });
   if (!Projects.canAccessProject(req.user, exp.project_id, 'scientist')) return res.status(403).json({ error: 'Project write access required' });
+  if (archivedReadOnly(exp, res)) return;
   if (exp.status === 'locked') return res.status(409).json({ error: 'Experiment is locked (read-only)' });
   const attachment = ExperimentAttachments.get(req.params.attachmentId);
   if (!attachment || attachment.experiment_id !== exp.id || attachment.deleted_at) return res.status(404).json({ error: 'Attachment not found' });
@@ -279,6 +307,7 @@ r.patch('/:id', (req, res) => {
   const exp = Experiments.get(req.params.id, req.user);
   if (!exp) return res.status(404).json({ error: 'Experiment not found' });
   if (!Projects.canAccessProject(req.user, exp.project_id, 'scientist')) return res.status(403).json({ error: 'Project write access required' });
+  if (archivedReadOnly(exp, res)) return;
   if (req.body?.project_id) {
     if (!Projects.get(req.body.project_id)) return res.status(404).json({ error: 'Destination project not found' });
     if (!Projects.canAccessProject(req.user, req.body.project_id, 'scientist'))
@@ -286,7 +315,12 @@ r.patch('/:id', (req, res) => {
   }
   if (exp.status === 'locked')
     return res.status(409).json({ error: 'Experiment is locked (read-only)' });
-  const updated = Experiments.update(req.params.id, req.body);
+  let updated;
+  try {
+    updated = Experiments.update(req.params.id, req.body);
+  } catch (err) {
+    return res.status(400).json({ error: err.message || 'Invalid experiment data' });
+  }
   Audit.log(req.user.name, req.user.role, 'EDIT_EXPERIMENT', `"${updated.title}" (${updated.id})`, { projectId: updated.project_id });
   res.json(Experiments.get(updated.id, req.user) || updated);
 });
@@ -295,6 +329,7 @@ r.post('/:id/lock', (req, res) => {
   const exp = Experiments.get(req.params.id, req.user);
   if (!exp) return res.status(404).json({ error: 'Experiment not found' });
   if (!Projects.canAccessProject(req.user, exp.project_id, 'reviewer')) return res.status(403).json({ error: 'Project reviewer access required' });
+  if (archivedReadOnly(exp, res)) return;
   const updated = Experiments.update(req.params.id, { status: 'locked' });
   Audit.log(req.user.name, req.user.role, 'LOCK_EXPERIMENT', `"${updated.title}" (${updated.id})`, { projectId: updated.project_id });
   res.json(Experiments.get(updated.id, req.user) || updated);
@@ -323,17 +358,22 @@ r.delete('/:id', requireRole('admin'), (req, res) => {
 r.get('/:id/export', (req, res) => {
   const exp = Experiments.get(req.params.id, req.user);
   if (!exp) return res.status(404).json({ error: 'Experiment not found' });
-  const format = req.query.format === 'html' ? 'html' : req.query.format === 'pdf' ? 'pdf' : 'json';
+  const format = ['html', 'pdf', 'rocrate', 'zip'].includes(req.query.format) ? req.query.format : 'json';
   const refs = Refs.listByExperiment(exp.id);
   const links = ExperimentLinks.list(exp.id, req.user);
   const attachments = ExperimentAttachments.list(exp.id);
   const steps = ExperimentSteps.list(exp.id);
   const audit = Audit.list({ project: exp.project_id, limit: 10000 });
+  const revisionsByEntry = Entries.revisionsForExperiment(exp.id);
+  const exportExperiment = {
+    ...exp,
+    entries: (exp.entries || []).map(en => ({ ...en, revisions: revisionsByEntry[en.id] || [] }))
+  };
   const payload = {
     export_version: 1,
     exported_at: new Date().toISOString(),
     exported_by: { id: req.user.id, name: req.user.name, email: req.user.email, role: req.user.role },
-    experiment: exp,
+    experiment: exportExperiment,
     experiment_links: links,
     steps,
     attachments,
@@ -355,6 +395,16 @@ r.get('/:id/export', (req, res) => {
     res.setHeader('Content-Disposition', `attachment; filename="${safeName(exp.title)}-export.pdf"`);
     return res.send(exportPdf(payload));
   }
+  if (format === 'rocrate') {
+    res.setHeader('Content-Type', 'application/ld+json; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${safeName(exp.title)}-ro-crate-metadata.json"`);
+    return res.json(exportRoCrate(payload));
+  }
+  if (format === 'zip') {
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="${safeName(exp.title)}-evidence-bundle.zip"`);
+    return res.send(exportZipBundle(payload));
+  }
   res.setHeader('Content-Disposition', `attachment; filename="${safeName(exp.title)}-export.json"`);
   res.json(payload);
 });
@@ -364,6 +414,7 @@ r.post('/:id/entries', (req, res) => {
   const exp = Experiments.get(req.params.id, req.user);
   if (!exp) return res.status(404).json({ error: 'Experiment not found' });
   if (!Projects.canAccessProject(req.user, exp.project_id, 'scientist')) return res.status(403).json({ error: 'Project write access required' });
+  if (archivedReadOnly(exp, res)) return;
   if (exp.status === 'locked') return res.status(409).json({ error: 'Experiment is locked (read-only)' });
   const { text } = req.body || {};
   if (!text || !text.trim()) return res.status(400).json({ error: 'Entry text is required' });
@@ -415,6 +466,9 @@ function applyTemplateDefaults(body = {}, template) {
   for (const field of ['objective', 'hypothesis', 'protocol', 'materials', 'success_criteria', 'safety_notes']) {
     if (!String(withDefaults[field] || '').trim()) withDefaults[field] = template[field] || '';
   }
+  const hasMetadata = withDefaults.metadata && typeof withDefaults.metadata === 'object' &&
+    Object.keys(withDefaults.metadata.extra_fields || withDefaults.metadata).length > 0;
+  if (!hasMetadata) withDefaults.metadata = template.metadata || {};
   return withDefaults;
 }
 
@@ -431,9 +485,16 @@ function requireExperimentWrite(req, res, next) {
   const exp = Experiments.get(req.params.id, req.user);
   if (!exp) return res.status(404).json({ error: 'Experiment not found' });
   if (!Projects.canAccessProject(req.user, exp.project_id, 'scientist')) return res.status(403).json({ error: 'Project write access required' });
+  if (archivedReadOnly(exp, res)) return;
   if (exp.status === 'locked') return res.status(409).json({ error: 'Experiment is locked (read-only)' });
   req.experiment = exp;
   next();
+}
+
+function archivedReadOnly(exp, res) {
+  if (!exp?.archived_at) return false;
+  res.status(409).json({ error: 'Experiment is archived (read-only). Restore it before editing.' });
+  return true;
 }
 
 function safeName(name) {
@@ -464,6 +525,200 @@ function formatBytes(size) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function exportZipBundle(pkg) {
+  const files = [
+    {
+      path: 'experiment-export.json',
+      role: 'machine-readable export',
+      contentType: 'application/json',
+      data: Buffer.from(JSON.stringify(pkg, null, 2))
+    },
+    {
+      path: 'experiment-export.html',
+      role: 'human-readable export',
+      contentType: 'text/html',
+      data: Buffer.from(exportHtml(pkg))
+    },
+    {
+      path: 'ro-crate-metadata.json',
+      role: 'FAIR metadata',
+      contentType: 'application/ld+json',
+      data: Buffer.from(JSON.stringify(exportRoCrate(pkg), null, 2))
+    },
+    {
+      path: 'audit.json',
+      role: 'audit trail',
+      contentType: 'application/json',
+      data: Buffer.from(JSON.stringify(pkg.audit || [], null, 2))
+    }
+  ];
+  const usedPaths = new Set(files.map(file => file.path));
+  const missingAttachments = [];
+  for (const att of pkg.attachments || []) {
+    const filePath = attachmentDiskPath(att);
+    if (!filePath || !fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+      missingAttachments.push({ id: att.id, original_name: att.original_name || att.stored_name || '', sha256: att.hash || '' });
+      continue;
+    }
+    const baseName = safeFileName(att.original_name || att.stored_name || att.id || 'attachment');
+    const zipPath = uniqueZipPath(`attachments/${baseName}`, usedPaths);
+    usedPaths.add(zipPath);
+    files.push({
+      path: zipPath,
+      role: 'attachment',
+      contentType: att.mime_type || 'application/octet-stream',
+      sourceId: att.id,
+      originalName: att.original_name || att.stored_name || '',
+      storedName: att.stored_name || '',
+      data: fs.readFileSync(filePath)
+    });
+  }
+  const manifestFiles = files.map(file => ({
+    path: file.path,
+    role: file.role,
+    content_type: file.contentType,
+    bytes: file.data.length,
+    sha256: sha256Buffer(file.data),
+    source_id: file.sourceId || undefined,
+    original_name: file.originalName || undefined,
+    stored_name: file.storedName || undefined
+  }));
+  const manifest = {
+    bundle_version: 1,
+    generated_at: pkg.exported_at,
+    experiment_id: pkg.experiment?.id || '',
+    eln_id: pkg.experiment?.eln_id || '',
+    title: pkg.experiment?.title || '',
+    export_sha256: pkg.integrity?.sha256 || '',
+    files: manifestFiles,
+    missing_attachments: missingAttachments
+  };
+  return zipStore([
+    {
+      path: 'manifest.json',
+      data: Buffer.from(JSON.stringify(manifest, null, 2))
+    },
+    ...files.map(file => ({ path: file.path, data: file.data }))
+  ], pkg.exported_at);
+}
+
+function attachmentDiskPath(att) {
+  const fromUrl = String(att?.url || '');
+  const uploadPrefix = '/uploads/';
+  if (fromUrl.startsWith(uploadPrefix)) {
+    const rel = fromUrl.slice(uploadPrefix.length).split('/').map(part => decodeURIComponent(part)).join(path.sep);
+    const full = path.resolve(UPLOAD_DIR, rel);
+    const root = path.resolve(UPLOAD_DIR);
+    if (full === root || !full.startsWith(`${root}${path.sep}`)) return null;
+    return full;
+  }
+  const stored = String(att?.stored_name || '').trim();
+  const experimentId = String(att?.experiment_id || '').trim();
+  if (!stored || !experimentId) return null;
+  return path.join(ATTACHMENT_DIR, safeFolder(experimentId), safeFileName(stored));
+}
+
+function uniqueZipPath(candidate, used) {
+  const normalized = String(candidate || 'attachment.dat').replace(/\\/g, '/').replace(/^\/+/, '');
+  if (!used.has(normalized)) return normalized;
+  const ext = path.posix.extname(normalized);
+  const base = normalized.slice(0, normalized.length - ext.length);
+  for (let i = 2; i < 1000; i += 1) {
+    const next = `${base}-${i}${ext}`;
+    if (!used.has(next)) return next;
+  }
+  return `${base}-${randomUUID().slice(0, 8)}${ext}`;
+}
+
+function zipStore(files, isoDate) {
+  const localParts = [];
+  const centralParts = [];
+  let offset = 0;
+  const { time, date } = dosDateTime(isoDate);
+  for (const file of files) {
+    const name = Buffer.from(zipEntryName(file.path), 'utf8');
+    const data = Buffer.isBuffer(file.data) ? file.data : Buffer.from(file.data || '');
+    const crc = crc32(data);
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(0x0800, 6);
+    local.writeUInt16LE(0, 8);
+    local.writeUInt16LE(time, 10);
+    local.writeUInt16LE(date, 12);
+    local.writeUInt32LE(crc, 14);
+    local.writeUInt32LE(data.length, 18);
+    local.writeUInt32LE(data.length, 22);
+    local.writeUInt16LE(name.length, 26);
+    local.writeUInt16LE(0, 28);
+    localParts.push(local, name, data);
+
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE(20, 4);
+    central.writeUInt16LE(20, 6);
+    central.writeUInt16LE(0x0800, 8);
+    central.writeUInt16LE(0, 10);
+    central.writeUInt16LE(time, 12);
+    central.writeUInt16LE(date, 14);
+    central.writeUInt32LE(crc, 16);
+    central.writeUInt32LE(data.length, 20);
+    central.writeUInt32LE(data.length, 24);
+    central.writeUInt16LE(name.length, 28);
+    central.writeUInt16LE(0, 30);
+    central.writeUInt16LE(0, 32);
+    central.writeUInt16LE(0, 34);
+    central.writeUInt16LE(0, 36);
+    central.writeUInt32LE(0, 38);
+    central.writeUInt32LE(offset, 42);
+    centralParts.push(central, name);
+    offset += local.length + name.length + data.length;
+  }
+  const centralOffset = offset;
+  const centralDirectory = Buffer.concat(centralParts);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(0, 4);
+  end.writeUInt16LE(0, 6);
+  end.writeUInt16LE(files.length, 8);
+  end.writeUInt16LE(files.length, 10);
+  end.writeUInt32LE(centralDirectory.length, 12);
+  end.writeUInt32LE(centralOffset, 16);
+  end.writeUInt16LE(0, 20);
+  return Buffer.concat([...localParts, centralDirectory, end]);
+}
+
+function zipEntryName(name) {
+  const clean = String(name || 'file.dat').replace(/\\/g, '/').replace(/^\/+/, '');
+  if (!clean || clean.includes('..') || path.posix.isAbsolute(clean)) return 'file.dat';
+  return clean;
+}
+
+function sha256Buffer(buffer) {
+  return createHash('sha256').update(buffer).digest('hex');
+}
+
+function dosDateTime(iso) {
+  const d = iso ? new Date(iso) : new Date();
+  const year = Math.max(1980, d.getFullYear());
+  return {
+    time: (d.getHours() << 11) | (d.getMinutes() << 5) | Math.floor(d.getSeconds() / 2),
+    date: ((year - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate()
+  };
+}
+
+const crc32Table = Array.from({ length: 256 }, (_, n) => {
+  let c = n;
+  for (let k = 0; k < 8; k += 1) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+  return c >>> 0;
+});
+
+function crc32(buffer) {
+  let crc = 0xffffffff;
+  for (const byte of buffer) crc = crc32Table[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
 function exportHtml(pkg) {
   const esc = v => String(v == null ? '' : v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const exp = pkg.experiment;
@@ -471,9 +726,11 @@ function exportHtml(pkg) {
   return `<!doctype html><html><head><meta charset="utf-8"><title>${esc(exp.title)} export</title>
   <style>body{font-family:system-ui,sans-serif;max-width:980px;margin:32px auto;padding:0 20px;line-height:1.45} pre{white-space:pre-wrap} .muted{color:#667085}.entry{border-top:1px solid #ddd;padding:14px 0}.hash{font-family:ui-monospace,monospace;font-size:12px}dt{font-weight:700;margin-top:10px}dd{margin:2px 0 0 0;white-space:pre-wrap}</style></head>
   <body><h1>${esc(exp.title)}</h1><p class="muted">${esc(exp.project_name || exp.project || 'General')} · ${esc(exp.status)}</p>
+  ${exp.eln_id ? `<p><b>ELN ID:</b> ${esc(exp.eln_id)}</p>` : ''}
   ${exp.tags ? `<p><b>Tags:</b> ${esc(exp.tags)}</p>` : ''}
   <h2>Objective</h2><p>${esc(exp.objective || '')}</p>
   <h2>Study setup</h2><dl>${setup.map(([label, value]) => `<dt>${esc(label)}</dt><dd>${esc(value || 'Not set')}</dd>`).join('')}</dl>
+  <h2>Custom Metadata</h2><dl>${metadataItems(exp.metadata).map(([label, value]) => `<dt>${esc(label)}</dt><dd>${esc(value || 'Not set')}</dd>`).join('') || '<dd>None</dd>'}</dl>
   <h2>Outcome</h2><dl><dt>Status</dt><dd>${esc(outcomeStatusLabel(exp.outcome_status))}</dd><dt>Result note</dt><dd>${esc(exp.outcome_summary || 'Not set')}</dd></dl>
   <h2>Related Experiments</h2><ul>${(pkg.experiment_links || []).map(link =>
     `<li>${esc(link.linked_title)}${link.note ? ` - ${esc(link.note)}` : ''}</li>`).join('') || '<li>None</li>'}</ul>
@@ -489,7 +746,11 @@ function exportHtml(pkg) {
 
 function exportEntryHtml(en, esc) {
   const comments = (en.comments || []).map(c => `<li><b>${esc(c.author || 'Unknown')}</b> · ${esc(c.created_at)}<br>${esc(c.text || '')}</li>`).join('');
-  return `<div class="entry"><b>${esc(en.type)}</b> · ${esc(en.created_at)} · ${esc(en.author || '')}<pre>${esc(en.text)}</pre><div class="hash">hash ${esc(en.hash)}${en.sig ? ` · sig ${esc(en.sig)}` : ''}</div>${comments ? `<h3>Comments</h3><ul>${comments}</ul>` : ''}</div>`;
+  const revisions = (en.revisions || []).map(rev =>
+    `<li><b>Revision ${esc(rev.revision_no)}</b> · edited ${esc(rev.created_at)} by ${esc(rev.edited_by || 'Unknown')}<br>
+      <span class="hash">previous hash ${esc(rev.previous_hash || '')}</span><pre>${esc(rev.previous_text || '')}</pre></li>`
+  ).join('');
+  return `<div class="entry"><b>${esc(en.type)}</b> · ${esc(en.created_at)} · ${esc(en.author || '')}<pre>${esc(en.text)}</pre><div class="hash">hash ${esc(en.hash)}${en.sig ? ` · sig ${esc(en.sig)}` : ''}</div>${revisions ? `<h3>Revisions</h3><ul>${revisions}</ul>` : ''}${comments ? `<h3>Comments</h3><ul>${comments}</ul>` : ''}</div>`;
 }
 
 function exportPdf(pkg) {
@@ -498,6 +759,7 @@ function exportPdf(pkg) {
 
   pdf.text(exp.title, { size: 18, font: 'F2', gap: 18 });
   pdf.text(`${exp.project_name || exp.project || 'General'} | ${exp.status}`, { size: 10, gap: 5 });
+  if (exp.eln_id) pdf.text(`ELN ID: ${exp.eln_id}`, { size: 9, gap: 5 });
   if (exp.tags) pdf.text(`Tags: ${exp.tags}`, { size: 9, gap: 5 });
   pdf.text(`Exported ${pkg.exported_at} by ${pkg.exported_by.name || pkg.exported_by.email}`, { size: 9, gap: 5 });
   pdf.text(`Export SHA-256: ${pkg.integrity.sha256}`, { size: 8, gap: 18 });
@@ -510,6 +772,17 @@ function exportPdf(pkg) {
     pdf.text(label, { size: 10, font: 'F2', gap: 3 });
     pdf.paragraph(value || 'Not set');
   });
+
+  pdf.heading('Custom Metadata');
+  const metadata = metadataItems(exp.metadata);
+  if (metadata.length) {
+    metadata.forEach(([label, value]) => {
+      pdf.text(label, { size: 10, font: 'F2', gap: 3 });
+      pdf.paragraph(value || 'Not set');
+    });
+  } else {
+    pdf.paragraph('None.');
+  }
 
   pdf.heading('Outcome');
   pdf.text('Status', { size: 10, font: 'F2', gap: 3 });
@@ -554,6 +827,13 @@ function exportPdf(pkg) {
       if (en.signed_by) {
         pdf.text(`signed ${en.signed_at || ''} by ${en.signed_by} (${en.signature_meaning || 'signed'})`, { size: 8, gap: 12 });
       }
+      if (en.revisions?.length) {
+        pdf.text(`Revisions (${en.revisions.length})`, { size: 10, font: 'F2', gap: 3 });
+        en.revisions.forEach(rev => {
+          pdf.paragraph(`Revision ${rev.revision_no} | edited ${rev.created_at} by ${rev.edited_by || 'Unknown'} | previous hash ${rev.previous_hash || ''}`);
+          pdf.paragraph(rev.previous_text || '');
+        });
+      }
       if (en.comments?.length) {
         pdf.text('Comments', { size: 10, font: 'F2', gap: 3 });
         en.comments.forEach(comment => {
@@ -579,6 +859,146 @@ function exportPdf(pkg) {
   return pdf.toBuffer();
 }
 
+function exportRoCrate(pkg) {
+  const exp = pkg.experiment;
+  const expId = `experiments/${exp.id}`;
+  const entryParts = (exp.entries || []).map(en => ({ '@id': `entries/${en.id}` }));
+  const attachmentParts = (pkg.attachments || []).map(att => ({ '@id': `attachments/${att.id}` }));
+  const referenceParts = (pkg.references || []).map(ref => ({ '@id': `references/${ref.id}` }));
+  const recordId = exp.eln_id || exp.id;
+  const graph = [
+    {
+      '@id': 'ro-crate-metadata.json',
+      '@type': 'CreativeWork',
+      conformsTo: { '@id': 'https://w3id.org/ro/crate/1.1' },
+      about: { '@id': './' }
+    },
+    {
+      '@id': './',
+      '@type': 'Dataset',
+      name: `${exp.title} evidence export`,
+      description: exp.objective || '',
+      identifier: recordId,
+      datePublished: pkg.exported_at,
+      creator: personNode(pkg.exported_by),
+      hasPart: [
+        { '@id': expId },
+        ...attachmentParts,
+        ...referenceParts,
+        { '@id': `audit/${exp.id}` }
+      ]
+    },
+    {
+      '@id': expId,
+      '@type': 'Dataset',
+      name: exp.title,
+      description: exp.objective || '',
+      identifier: recordId,
+      dateCreated: exp.created_at,
+      dateModified: exp.updated_at,
+      keywords: splitTags(exp.tags),
+      isPartOf: { '@id': './' },
+      about: [exp.project_name || exp.project || exp.project_id || 'General', outcomeStatusLabel(exp.outcome_status)].filter(Boolean),
+      additionalProperty: [
+        ...experimentSetupItems(exp).map(([name, value]) => propertyValue(name, value || '')),
+        propertyValue('Outcome status', outcomeStatusLabel(exp.outcome_status)),
+        propertyValue('Outcome note', exp.outcome_summary || ''),
+        propertyValue('Export SHA-256', pkg.integrity.sha256)
+      ],
+      variableMeasured: metadataItems(exp.metadata).map(([name, value]) => propertyValue(name, value || '')),
+      hasPart: [...entryParts, ...attachmentParts, ...referenceParts]
+    },
+    ...(exp.entries || []).map(entryRoCrateNode),
+    ...(pkg.attachments || []).map(attachmentRoCrateNode),
+    ...(pkg.references || []).map(referenceRoCrateNode),
+    {
+      '@id': `audit/${exp.id}`,
+      '@type': 'CreativeWork',
+      name: `${exp.title} audit trail`,
+      encodingFormat: 'application/json',
+      dateCreated: pkg.exported_at,
+      sha256: pkg.integrity.sha256,
+      text: JSON.stringify((pkg.audit || []).filter(row => !row.project_id || row.project_id === exp.project_id))
+    }
+  ];
+  return {
+    '@context': 'https://w3id.org/ro/crate/1.1/context',
+    '@graph': graph,
+    export_version: pkg.export_version,
+    exported_at: pkg.exported_at,
+    integrity: pkg.integrity
+  };
+}
+
+function entryRoCrateNode(en) {
+  return {
+    '@id': `entries/${en.id}`,
+    '@type': 'CreativeWork',
+    name: `${en.type || 'note'} entry ${en.id}`,
+    text: en.text || '',
+    encodingFormat: 'text/plain',
+    dateCreated: en.created_at,
+    dateModified: en.updated_at || en.created_at,
+    author: personNode({ name: en.author, role: en.role }),
+    isPartOf: { '@id': `experiments/${en.experiment_id}` },
+    sha256: en.hash,
+    digitalSignature: en.sig || undefined,
+    additionalProperty: [
+      en.signed_by ? propertyValue('Signed by', en.signed_by) : null,
+      en.signed_at ? propertyValue('Signed at', en.signed_at) : null,
+      en.signature_meaning ? propertyValue('Signature meaning', en.signature_meaning) : null,
+      en.revision_count ? propertyValue('Revision count', en.revision_count) : null
+    ].filter(Boolean)
+  };
+}
+
+function attachmentRoCrateNode(att) {
+  return {
+    '@id': `attachments/${att.id}`,
+    '@type': 'MediaObject',
+    name: att.original_name || att.stored_name || att.id,
+    description: att.note || '',
+    contentUrl: att.url,
+    encodingFormat: att.mime_type || 'application/octet-stream',
+    contentSize: Number(att.size) || 0,
+    dateCreated: att.uploaded_at || att.created_at,
+    author: personNode({ name: att.uploaded_by }),
+    sha256: att.hash,
+    isPartOf: { '@id': `experiments/${att.experiment_id}` }
+  };
+}
+
+function referenceRoCrateNode(ref) {
+  return {
+    '@id': `references/${ref.id}`,
+    '@type': 'ScholarlyArticle',
+    name: ref.title || ref.doi || ref.url || ref.id,
+    author: ref.authors || '',
+    datePublished: ref.year ? String(ref.year) : undefined,
+    identifier: ref.doi || ref.url || ref.id,
+    url: ref.url || undefined,
+    sameAs: ref.doi ? `https://doi.org/${ref.doi}` : undefined,
+    isPartOf: { '@id': `experiments/${ref.experiment_id}` }
+  };
+}
+
+function propertyValue(name, value) {
+  return { '@type': 'PropertyValue', name, value: String(value || '') };
+}
+
+function personNode(person = {}) {
+  return {
+    '@type': 'Person',
+    name: person.name || person.email || 'Unknown',
+    email: person.email || undefined,
+    roleName: person.role || undefined
+  };
+}
+
+function splitTags(value) {
+  return String(value || '').split(',').map(tag => tag.trim()).filter(Boolean);
+}
+
 function experimentSetupItems(exp) {
   return [
     ['Hypothesis', exp.hypothesis],
@@ -587,6 +1007,21 @@ function experimentSetupItems(exp) {
     ['Success criteria', exp.success_criteria],
     ['Safety notes', exp.safety_notes]
   ];
+}
+
+function metadataItems(metadata) {
+  const fields = metadata?.extra_fields && typeof metadata.extra_fields === 'object' ? metadata.extra_fields : {};
+  return Object.entries(fields)
+    .map(([label, field]) => [
+      label,
+      [field?.value, field?.unit].filter(Boolean).join(' ')
+    ])
+    .sort((a, b) => {
+      const fieldsObj = metadata?.extra_fields || {};
+      const ap = Number(fieldsObj[a[0]]?.position) || 0;
+      const bp = Number(fieldsObj[b[0]]?.position) || 0;
+      return ap - bp || a[0].localeCompare(b[0]);
+    });
 }
 
 function outcomeStatusLabel(status) {
