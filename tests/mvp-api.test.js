@@ -445,6 +445,30 @@ test('MVP pilot workflow: projects, access, signatures, exports, audit and sessi
     assert.equal(figure.raw_image_url, rawUpload.url);
     assert.equal(figure.clean_image_url, cleanUpload.url);
 
+    const savedTemplate = await scientist.req(base, 'POST', '/api/figure-templates', {
+      experimentId: exp.id,
+      name: 'Slide region sketch template',
+      template: {
+        version: 1,
+        canvas: { width: 1000, height: 600 },
+        cleanStyle: 'schematic',
+        cleanImageDataUrl: `data:image/png;base64,${Buffer.from(tinyPng()).toString('base64')}`,
+        strokes: [{ tool: 'pen', color: '#2563eb', width: 5, shape: 'line', points: [{ x: 120, y: 180 }, { x: 420, y: 180 }] }],
+        labels: [{ x: 160, y: 150, text: 'sample zone', color: '#111827' }]
+      }
+    });
+    assert.equal(savedTemplate.name, 'Slide region sketch template');
+    assert.equal(savedTemplate.template.labels[0].text, 'sample zone');
+    assert.match(savedTemplate.template.cleanImageDataUrl, /^data:image\/png;base64,/);
+    assert.equal(savedTemplate.project_id, project.id);
+
+    const figureTemplates = await scientist.req(base, 'GET', `/api/figure-templates?experimentId=${exp.id}`);
+    assert.ok(figureTemplates.some(t => t.id === savedTemplate.id));
+
+    await scientist.req(base, 'DELETE', `/api/figure-templates/${savedTemplate.id}`);
+    const templatesAfterDelete = await scientist.req(base, 'GET', `/api/figure-templates?experimentId=${exp.id}`);
+    assert.ok(!templatesAfterDelete.some(t => t.id === savedTemplate.id));
+
     const rawOcrUpload = await scientist.uploadImage(base, tinyPng(), 'raw-notebook-scan.png', 'ocr-raw', exp.id);
     const cleanOcrUpload = await scientist.uploadImage(base, tinyPng(), 'processed-notebook-scan.png', 'ocr-clean', exp.id);
     assert.match(rawOcrUpload.url, new RegExp(`^/uploads/ocr/${exp.id}/raw/`));
@@ -664,6 +688,8 @@ test('MVP pilot workflow: projects, access, signatures, exports, audit and sessi
       a.detail.includes('entries deleted: 1') &&
       a.detail.includes(`entry hashes: ${deletableEntry.hash}`)
     ));
+    assert.ok(audit.some(a => a.action === 'CREATE_FIGURE_TEMPLATE'));
+    assert.ok(audit.some(a => a.action === 'DELETE_FIGURE_TEMPLATE'));
     assert.ok(audit.every(a => a.hash && a.previous_hash != null));
 
     const search = await scientist.req(base, 'GET', '/api/search?q=formulation clarity');
@@ -761,6 +787,7 @@ test('migration upgrades a pre-project database without crashing', async () => {
   assert.ok(upgraded.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='experiment_attachments'").get());
   assert.ok(upgraded.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='experiment_steps'").get());
   assert.ok(upgraded.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_audit_project'").get());
+  assert.ok(upgraded.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='figure_templates'").get());
   upgraded.close();
 });
 

@@ -108,7 +108,10 @@ and repo-native workflow tracking.
   hidden source evidence behind the corrected notebook entry, and evidence
   uploads are guarded by project write access and experiment lock state.
 - Sketch-to-figure capture: browser drawing canvas, cleaned diagram upload,
-  raw sketch preservation, and figure entries with raw/clean image evidence.
+  raw sketch preservation, and figure entries with raw/clean image evidence;
+  built-in scaffolds (synapse, cell, neuron, sagittal mouse brain, workflow,
+  panel layout, graphical abstract), clean export styles, draft legends, and
+  audited project-scoped reusable sketch templates.
 - Audit-ready controls: SHA-256 content fingerprints, password-confirmed
   e-signatures with project reviewer-gated reviewer/approval meanings,
   experiment lock (409 on writes), deletion tombstones, hash-chained audit trail
@@ -285,6 +288,30 @@ and repo-native workflow tracking.
   navigation, theme, or search controls.
 
 ## Change Log
+
+### 2026-11-02 - Merge reusable sketch figure templates
+
+- Task: SVX-000
+- Branch: `claude/brave-bohr-qil1jl` + `origin/sketch-to-figure`
+- Summary: Merged the outstanding `sketch-to-figure` commit (07566bc) that was
+  never brought into `master`: project-scoped saved sketch templates
+  (`/api/figure-templates`, `FigureTemplates` repo, `figure_templates` table,
+  `CREATE_FIGURE_TEMPLATE`/`DELETE_FIGURE_TEMPLATE` audit), new scaffolds
+  (sagittal mouse brain, workflow, panel layout, graphical abstract), clean
+  export style modes, draft-legend helper, and blank canvas by default.
+  Conflicts: `PROGRESS.md` (deleted on master; kept deleted, notes folded into
+  this file) and `tests/mvp-api.test.js` (kept both sides; renamed a clashing
+  `templates` variable to `figureTemplates`).
+- Validation: `node --test` 84/84 pass.
+- Files:
+  - `TRACKING.md`
+  - `public/css/styles.css`
+  - `public/js/api.js`
+  - `public/js/sketchpad.js`
+  - `src/db.js`
+  - `src/index.js`
+  - `src/routes/figure-templates.js`
+  - `tests/mvp-api.test.js`
 
 ### 2026-07-08 - Fix tab-freezing auto-grow observer feedback loop
 
