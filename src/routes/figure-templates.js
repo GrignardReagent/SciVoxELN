@@ -9,6 +9,13 @@ r.get('/', (req, res) => {
   res.json(FigureTemplates.listByProject(ctx.projectId));
 });
 
+r.get('/:id', (req, res) => {
+  const tpl = FigureTemplates.get(req.params.id);
+  if (!tpl || !Projects.canAccessProject(req.user, tpl.project_id, 'viewer'))
+    return res.status(404).json({ error: 'Template not found' });
+  res.json(tpl);
+});
+
 r.post('/', (req, res) => {
   const ctx = resolveProject(req, res, 'scientist'); if (!ctx) return;
   const name = (req.body?.name || '').trim();

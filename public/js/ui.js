@@ -3,11 +3,20 @@
 export const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g,
   c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-export const fmt = iso => iso ? new Date(iso).toLocaleString(undefined,
-  { year: 'numeric', month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '—';
+// Reuse formatters: toLocaleString() with options builds a new Intl formatter on
+// every call, which dominated render time on experiments with hundreds of entries.
+const fmtFull = new Intl.DateTimeFormat(undefined,
+  { year: 'numeric', month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+const fmtDate = new Intl.DateTimeFormat(undefined, { month: 'short', day: '2-digit', year: 'numeric' });
+const formatWith = (formatter, iso) => {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? 'Invalid Date' : formatter.format(d);
+};
 
-export const fmtShort = iso => iso ? new Date(iso).toLocaleDateString(undefined,
-  { month: 'short', day: '2-digit', year: 'numeric' }) : '—';
+export const fmt = iso => formatWith(fmtFull, iso);
+
+export const fmtShort = iso => formatWith(fmtDate, iso);
 
 let flashT;
 export function toast(msg, isErr = false) {
@@ -68,7 +77,7 @@ export function installTextareaAutoGrow(root = document.body) {
 
 function prepareAutoGrowTextarea(el) {
   if (autoGrowRegistry.has(el)) {
-    growTextarea(el);
+    queueGrowTextarea(el);
     return;
   }
   autoGrowRegistry.add(el);
@@ -78,7 +87,7 @@ function prepareAutoGrowTextarea(el) {
   el.addEventListener('change', () => scheduleGrowTextarea(el));
   el.addEventListener('focus', () => scheduleGrowTextarea(el));
   observeTextareaResize(el);
-  growTextarea(el);
+  queueGrowTextarea(el);
 }
 
 function installTextareaValueAutoGrow() {
@@ -113,14 +122,40 @@ function observeTextareaResize(el) {
 }
 
 function scheduleGrowTextarea(el) {
-  if (el.dataset.autogrowQueued === 'true') return;
-  el.dataset.autogrowQueued = 'true';
-  const run = () => {
-    delete el.dataset.autogrowQueued;
-    growTextarea(el);
+  queueGrowTextarea(el);
+}
+
+// Batch fits into one frame. Fitting each textarea on its own interleaves a
+// style write with a layout read, forcing one full reflow per textarea (500+
+// on large experiments). The batch does reads and writes in separate passes,
+// so the whole set costs about two layouts.
+const pendingGrow = new Set();
+let pendingGrowScheduled = false;
+
+function queueGrowTextarea(el) {
+  pendingGrow.add(el);
+  if (pendingGrowScheduled) return;
+  pendingGrowScheduled = true;
+  const flush = () => {
+    pendingGrowScheduled = false;
+    const batch = [...pendingGrow];
+    pendingGrow.clear();
+    growTextareaBatch(batch);
   };
-  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run);
-  else queueMicrotask(run);
+  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(flush);
+  else queueMicrotask(flush);
+}
+
+function growTextareaBatch(els) {
+  const visible = els.filter(el => el.isConnected && !(el.clientWidth === 0 && el.scrollHeight === 0));
+  if (!visible.length) return;
+  // Collapsing to 'auto' briefly shortens the page; keep scroll positions stable.
+  const scrollers = [document.scrollingElement, ...document.querySelectorAll('.main, .overlay')]
+    .filter(Boolean).map(s => [s, s.scrollTop]);
+  visible.forEach(el => { el.style.height = 'auto'; });
+  const heights = visible.map(el => el.scrollHeight + el.offsetHeight - el.clientHeight);
+  visible.forEach((el, i) => { el.style.height = `${heights[i]}px`; });
+  scrollers.forEach(([s, top]) => { if (s.scrollTop !== top) s.scrollTop = top; });
 }
 
 function growTextarea(el) {

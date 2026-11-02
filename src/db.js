@@ -1399,11 +1399,15 @@ function parseFigureTemplate(row) {
 }
 
 export const FigureTemplates = {
+  // Metadata only: each template embeds a clean-preview PNG (~200 KB), so the
+  // picker list must not ship every payload. Fetch one with get() on insert.
   listByProject(projectId) {
-    return db.prepare(`SELECT ft.*, u.name AS created_by_name, u.email AS created_by_email
+    return db.prepare(`SELECT ft.id, ft.project_id, ft.name, ft.created_by, ft.created_by_user_id,
+        ft.created_at, ft.updated_at, length(ft.template_json) AS template_bytes,
+        u.name AS created_by_name, u.email AS created_by_email
       FROM figure_templates ft LEFT JOIN users u ON u.id=ft.created_by_user_id
       WHERE ft.project_id=?
-      ORDER BY ft.updated_at DESC, ft.name COLLATE NOCASE`).all(projectId).map(parseFigureTemplate);
+      ORDER BY ft.updated_at DESC, ft.name COLLATE NOCASE`).all(projectId).map(row => ({ ...row }));
   },
   get(templateId) {
     return parseFigureTemplate(db.prepare(`SELECT ft.*, u.name AS created_by_name, u.email AS created_by_email

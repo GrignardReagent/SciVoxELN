@@ -124,6 +124,7 @@ export const api = {
   deleteReference: id => req('DELETE', `/api/references/${id}`),
   // sketch-to-figure reusable templates
   figureTemplates: experimentId => req('GET', `/api/figure-templates?experimentId=${encodeURIComponent(experimentId)}`),
+  figureTemplate: id => req('GET', `/api/figure-templates/${encodeURIComponent(id)}`),
   saveFigureTemplate: (experimentId, d) => req('POST', '/api/figure-templates', { experimentId, ...d }),
   deleteFigureTemplate: id => req('DELETE', `/api/figure-templates/${id}`),
   // uploads

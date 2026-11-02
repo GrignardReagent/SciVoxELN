@@ -464,6 +464,12 @@ test('MVP pilot workflow: projects, access, signatures, exports, audit and sessi
 
     const figureTemplates = await scientist.req(base, 'GET', `/api/figure-templates?experimentId=${exp.id}`);
     assert.ok(figureTemplates.some(t => t.id === savedTemplate.id));
+    const listedTemplate = figureTemplates.find(t => t.id === savedTemplate.id);
+    assert.equal(listedTemplate.template, undefined, 'template list must not ship full payloads');
+    assert.ok(listedTemplate.template_bytes > 0);
+    const fullTemplate = await scientist.req(base, 'GET', `/api/figure-templates/${savedTemplate.id}`);
+    assert.equal(fullTemplate.template.labels[0].text, 'sample zone');
+    assert.match(fullTemplate.template.cleanImageDataUrl, /^data:image\/png;base64,/);
 
     await scientist.req(base, 'DELETE', `/api/figure-templates/${savedTemplate.id}`);
     const templatesAfterDelete = await scientist.req(base, 'GET', `/api/figure-templates?experimentId=${exp.id}`);

@@ -208,6 +208,10 @@ export function openSketchFigureModal(exp, onSaved) {
     paint();
   };
   const insertSavedTemplate = guard(async selected => {
+    if (!selected.template) {
+      selected = await api.figureTemplate(selected.id);
+      savedTemplates = savedTemplates.map(t => t.id === selected.id ? selected : t);
+    }
     const tpl = cloneTemplate({ name: selected.name, ...(selected.template || {}) });
     if (tpl.cleanImageDataUrl) {
       const previousImageTemplate = imageTemplate;
@@ -436,7 +440,7 @@ export function openSketchFigureModal(exp, onSaved) {
   };
   m.querySelector('[data-draft-legend]').onclick = () => {
     const caption = m.querySelector('#figureCaption');
-    const draft = draftFigureLegend(exp, labels, insertedTemplates, Boolean(imageTemplate), cleanStyle);
+    const draft = draftFigureLegend(exp, labels, insertedTemplates, imageTemplate, cleanStyle);
     caption.value = caption.value.trim() ? `${caption.value.trim()}\n\n${draft}` : draft;
     stateEl.textContent = 'Draft legend added. Edit it before attaching the figure.';
   };
@@ -1197,14 +1201,15 @@ function styleProfile(cleanStyle = 'schematic') {
   return CLEAN_STYLES[cleanStyle] || CLEAN_STYLES.schematic;
 }
 
-function draftFigureLegend(exp, labels, templateNames, hasImageTemplate, cleanStyle) {
+function draftFigureLegend(exp, labels, templateNames, imageTemplate, cleanStyle) {
   const title = exp?.title || 'this experiment';
   const uniqueTemplates = [...new Set(templateNames || [])];
   const labelText = labels.map(l => l.text.trim()).filter(Boolean);
   const pieces = [`Figure. Sketch-to-figure diagram for ${title}.`];
   if (uniqueTemplates.length) pieces.push(`Scaffold: ${uniqueTemplates.join(', ')}.`);
   if (labelText.length) pieces.push(`Annotated features include ${labelText.slice(0, 8).join(', ')}${labelText.length > 8 ? ' and additional labels' : ''}.`);
-  if (hasImageTemplate) pieces.push('An imported image was used as an underlay for manual annotation.');
+  // Saved templates reinsert as a clean underlay too; only call real imports "imported".
+  if (imageTemplate && !imageTemplate.cleanTemplate) pieces.push('An imported image was used as an underlay for manual annotation.');
   pieces.push(`The cleaned version uses a ${styleProfile(cleanStyle).name} rendering while preserving the raw sketch as provenance.`);
   return pieces.join(' ');
 }

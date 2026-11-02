@@ -289,6 +289,43 @@ and repo-native workflow tracking.
 
 ## Change Log
 
+### 2026-11-02 - Speed up large experiment renders and slim sketch template list
+
+- Task: SVX-000
+- Branch: `claude/brave-bohr-qil1jl`
+- Summary: Sandbox browser testing after the sketch-to-figure merge.
+  - Auto-grow textareas (`public/js/ui.js`) now fit in one batched frame with
+    separate read/write passes instead of one forced reflow per textarea
+    (500-entry experiment renders 500+ textareas). Scroll positions of the
+    page, `.main` and modal overlay are preserved across the batch.
+  - `fmt()`/`fmtShort()` reuse cached `Intl.DateTimeFormat` instances (was
+    ~33 ms of a 500-entry render, now ~2 ms).
+  - `GET /api/figure-templates` returns metadata only (+ `template_bytes`);
+    new `GET /api/figure-templates/:id` returns the full template, fetched on
+    insert. Each saved template embeds a ~194 KB PNG, so the list previously
+    shipped every payload whenever the sketch modal opened.
+  - Draft legend now includes the experiment title (modal was opened with
+    `{ id }` only) and no longer calls a reinserted saved template an
+    "imported image".
+  - Verified the 2026-07-08 auto-grow freeze fix in a real browser: opening
+    experiments no longer hangs the tab.
+- Validation: `node --test` 85/85 pass. Playwright/Chromium against a
+  disposable `DATA_DIR` (1280x860 + 390x844): register, open experiment,
+  draw, insert scaffold, preview, save/list/insert/delete saved template,
+  draft legend, attach figure; no app console errors (only blocked Tesseract
+  CDN in sandbox and the pre-login 401). 500-entry experiment open: 295 ->
+  252 ms, main-thread long tasks 187 -> 142 ms.
+- Files:
+  - `TRACKING.md`
+  - `public/js/api.js`
+  - `public/js/sketchpad.js`
+  - `public/js/ui.js`
+  - `public/js/views/experiments.js`
+  - `src/db.js`
+  - `src/routes/figure-templates.js`
+  - `tests/mvp-api.test.js`
+  - `tests/textarea-autogrow-ui.test.js`
+
 ### 2026-11-02 - Merge reusable sketch figure templates
 
 - Task: SVX-000
