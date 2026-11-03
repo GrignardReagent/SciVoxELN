@@ -308,7 +308,7 @@ export const renderExperiment = guard(async (root, ctx, id) => {
   if (summariseBtn) summariseBtn.onclick = guard(() => summariseExperimentEntries(e, ctx));
   const suggestStepsBtn = root.querySelector('[data-suggest-experiment-steps]');
   if (suggestStepsBtn) suggestStepsBtn.onclick = guard(() => suggestExperimentSteps(e, ctx));
-  if (canWrite && !locked) mountComposer(root.querySelector('#composerMount'), ctx, e.id);
+  if (canWrite && !locked) mountComposer(root.querySelector('#composerMount'), ctx, e.id, e);
   mountExperimentSteps(root, e, viewAccess);
   mountAssistant(root, e, viewAccess);
   mountExperimentLinks(root, e, viewAccess, ctx);
@@ -1584,7 +1584,7 @@ async function duplicateExperimentModal(ctx, e) {
 }
 
 /* --------------------------- Composer --------------------------- */
-async function mountComposer(mount, ctx, expId) {
+async function mountComposer(mount, ctx, expId, exp = {}) {
   let capturedType = null, uploadedUrl = null;
   let rawOcrUrl = null, cleanOcrUrl = null;
   let rawOcrText = '', correctedOcrText = '';
@@ -2049,7 +2049,7 @@ async function mountComposer(mount, ctx, expId) {
   if (!cameraSupported) { camBtn.disabled = true; camBtn.title = 'Camera not available on this device/context (needs HTTPS)'; }
   else camBtn.onclick = () => openCamera(processOcr);
 
-  mount.querySelector('#sketchBtn').onclick = () => openSketchFigureModal({ id: expId }, () => ctx.go('experiments', { id: expId }));
+  mount.querySelector('#sketchBtn').onclick = () => openSketchFigureModal({ id: expId, title: exp.title }, () => ctx.go('experiments', { id: expId }));
 
   /* ---- Save / clear ---- */
   checkDraftBtn.onclick = guard(checkEntryDraft);

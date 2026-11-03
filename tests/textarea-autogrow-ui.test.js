@@ -55,3 +55,12 @@ test('auto-grow observer does not watch style (prevents infinite refit loop)', (
   assert.ok(!/['"]style['"]/.test(filterMatch[1]),
     "auto-grow observer must not include 'style' in attributeFilter");
 });
+
+test('auto-grow batches textarea fits to avoid one forced reflow per textarea', () => {
+  assert.match(ui, /function queueGrowTextarea/);
+  assert.match(ui, /function growTextareaBatch/);
+  // Separate write ('auto') pass, read pass, write pass.
+  assert.match(ui, /visible\.forEach\(el => \{ el\.style\.height = 'auto'; \}\);[\s\S]*const heights = visible\.map[\s\S]*visible\.forEach\(\(el, i\)/);
+  const prepare = ui.match(/function prepareAutoGrowTextarea[\s\S]*?\n}/)[0];
+  assert.ok(!/\bgrowTextarea\(el\);\n\s*}$/.test(prepare), 'initial fit must be queued, not synchronous');
+});

@@ -108,7 +108,10 @@ and repo-native workflow tracking.
   hidden source evidence behind the corrected notebook entry, and evidence
   uploads are guarded by project write access and experiment lock state.
 - Sketch-to-figure capture: browser drawing canvas, cleaned diagram upload,
-  raw sketch preservation, and figure entries with raw/clean image evidence.
+  raw sketch preservation, and figure entries with raw/clean image evidence;
+  built-in scaffolds (synapse, cell, neuron, sagittal mouse brain, workflow,
+  panel layout, graphical abstract), clean export styles, draft legends, and
+  audited project-scoped reusable sketch templates.
 - Audit-ready controls: SHA-256 content fingerprints, password-confirmed
   e-signatures with project reviewer-gated reviewer/approval meanings,
   experiment lock (409 on writes), deletion tombstones, hash-chained audit trail
@@ -285,6 +288,67 @@ and repo-native workflow tracking.
   navigation, theme, or search controls.
 
 ## Change Log
+
+### 2026-11-02 - Speed up large experiment renders and slim sketch template list
+
+- Task: SVX-000
+- Branch: `claude/brave-bohr-qil1jl`
+- Summary: Sandbox browser testing after the sketch-to-figure merge.
+  - Auto-grow textareas (`public/js/ui.js`) now fit in one batched frame with
+    separate read/write passes instead of one forced reflow per textarea
+    (500-entry experiment renders 500+ textareas). Scroll positions of the
+    page, `.main` and modal overlay are preserved across the batch.
+  - `fmt()`/`fmtShort()` reuse cached `Intl.DateTimeFormat` instances (was
+    ~33 ms of a 500-entry render, now ~2 ms).
+  - `GET /api/figure-templates` returns metadata only (+ `template_bytes`);
+    new `GET /api/figure-templates/:id` returns the full template, fetched on
+    insert. Each saved template embeds a ~194 KB PNG, so the list previously
+    shipped every payload whenever the sketch modal opened.
+  - Draft legend now includes the experiment title (modal was opened with
+    `{ id }` only) and no longer calls a reinserted saved template an
+    "imported image".
+  - Verified the 2026-07-08 auto-grow freeze fix in a real browser: opening
+    experiments no longer hangs the tab.
+- Validation: `node --test` 85/85 pass. Playwright/Chromium against a
+  disposable `DATA_DIR` (1280x860 + 390x844): register, open experiment,
+  draw, insert scaffold, preview, save/list/insert/delete saved template,
+  draft legend, attach figure; no app console errors (only blocked Tesseract
+  CDN in sandbox and the pre-login 401). 500-entry experiment open: 295 ->
+  252 ms, main-thread long tasks 187 -> 142 ms.
+- Files:
+  - `TRACKING.md`
+  - `public/js/api.js`
+  - `public/js/sketchpad.js`
+  - `public/js/ui.js`
+  - `public/js/views/experiments.js`
+  - `src/db.js`
+  - `src/routes/figure-templates.js`
+  - `tests/mvp-api.test.js`
+  - `tests/textarea-autogrow-ui.test.js`
+
+### 2026-11-02 - Merge reusable sketch figure templates
+
+- Task: SVX-000
+- Branch: `claude/brave-bohr-qil1jl` + `origin/sketch-to-figure`
+- Summary: Merged the outstanding `sketch-to-figure` commit (07566bc) that was
+  never brought into `master`: project-scoped saved sketch templates
+  (`/api/figure-templates`, `FigureTemplates` repo, `figure_templates` table,
+  `CREATE_FIGURE_TEMPLATE`/`DELETE_FIGURE_TEMPLATE` audit), new scaffolds
+  (sagittal mouse brain, workflow, panel layout, graphical abstract), clean
+  export style modes, draft-legend helper, and blank canvas by default.
+  Conflicts: `PROGRESS.md` (deleted on master; kept deleted, notes folded into
+  this file) and `tests/mvp-api.test.js` (kept both sides; renamed a clashing
+  `templates` variable to `figureTemplates`).
+- Validation: `node --test` 84/84 pass.
+- Files:
+  - `TRACKING.md`
+  - `public/css/styles.css`
+  - `public/js/api.js`
+  - `public/js/sketchpad.js`
+  - `src/db.js`
+  - `src/index.js`
+  - `src/routes/figure-templates.js`
+  - `tests/mvp-api.test.js`
 
 ### 2026-07-08 - Fix tab-freezing auto-grow observer feedback loop
 
